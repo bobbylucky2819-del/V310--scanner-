@@ -97,6 +97,6 @@ def scan_v310_market():
         time.sleep(60)
 
 if __name__ == "__main__":
-          send_telegram_alert("🚀 బాట్ స్టార్ట్ అయింది బ్రో!")
+    send_telegram_alert("🚀 బాట్ స్టార్ట్ అయింది బ్రో!")
     scan_v310_market()
           
