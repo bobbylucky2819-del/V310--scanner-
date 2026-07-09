@@ -3,6 +3,23 @@ import time
 import requests
 import pandas as pd
 import numpy as np
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+keep_alive()
 
 # --- న్యూ సెపరేట్ టెలిగ్రామ్ కాన్ఫిగరేషన్ ---
 BOT_TOKEN = os.environ.get("NEW_BOT_TOKEN")
