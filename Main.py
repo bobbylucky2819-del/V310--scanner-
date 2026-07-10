@@ -26,7 +26,6 @@ keep_alive()
 BOT_TOKEN = os.environ.get("NEW_BOT_TOKEN")
 CHAT_ID = os.environ.get("NEW_CHAT_ID")
 
-# క్రిప్టో మరియు ఇండియన్ మార్కెట్ సింబల్స్ (ఇండియన్ వాటికి చివరన .NS పెట్టాలి బ్రో)
 SYMBOLS = [
     "BTC-USD", "ETH-USD", "XRP-USD", 
     "SBIN.NS", "TATAMOTORS.NS", "RELIANCE.NS", "INFY.NS"
@@ -35,7 +34,7 @@ SYMBOLS = [
 def send_telegram_alert(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+        requests.post(url, json={"chat_id": CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
         print(f"Telegram Error: {e}")
 
@@ -49,7 +48,6 @@ def calculate_atr(df, period=14):
 
 def fetch_live_data(symbol, interval):
     try:
-        # Yahoo Finance లో 2h, 3h ఉండవు కాబట్టి వాటిని 1h డేటా నుండి రీసాంపిల్ చేస్తాం బ్రో
         yf_interval = interval
         if interval in ["2h", "3h"]:
             yf_interval = "1h"
@@ -60,7 +58,6 @@ def fetch_live_data(symbol, interval):
         if df.empty or len(df) < 15:
             return None
             
-        # 2h మరియు 3h కి డేటా కన్వర్షన్
         if interval == "2h":
             df = df.resample('2h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
         elif interval == "3h":
@@ -88,40 +85,48 @@ def scan_v310_market():
                 if df is None or len(df) < 10:
                     continue
                     
-                close = df['Close'].iloc[-1]
-                prev_close = df['Close'].iloc[-2]
-                highest_high = df['High'].iloc[-8:-1].max()
-                lowest_low = df['Low'].iloc[-8:-1].min()
-                atr_val = calculate_atr(df).iloc[-1]
-                
-                state = last_signals[key]["state"]
-                target = last_signals[key]["target"]
-                stop = last_signals[key]["stop"]
-                
-                # ---- CHECK EXITS FIRST ----
-                if state == "CALL" and (close >= target or close <= stop):
-                    send_telegram_alert(f"🔶 C.EXIT | {symbol.replace('.NS','')} ({tf}) | Price: {close:.2f}")
-                    last_signals[key]["state"] = None
-                elif state == "PUT" and (close <= target or close >= stop):
-                    send_telegram_alert(f"🔶 P.EXIT | {symbol.replace('.NS','')} ({tf}) | Price: {close:.2f}")
-                    last_signals[key]["state"] = None
+                try:
+                    close = df['Close'].iloc[-1]
+                    prev_close = df['Close'].iloc[-2]
                     
-                # ---- CHECK NEW ENTRIES ----
-                elif prev_close <= highest_high and close > highest_high and state != "CALL":
-                    last_signals[key]["target"] = close + (atr_val * 2)
-                    last_signals[key]["stop"] = close - (atr_val * 1.5)
-                    last_signals[key]["state"] = "CALL"
-                    send_telegram_alert(f"🟢 C.BUY | {symbol.replace('.NS','')} ({tf}) | Entry: {close:.2f} | TG: {last_signals[key]['target']:.2f} | SL: {last_signals[key]['stop']:.2f}")
+                    sub_df = df.iloc[-8:-1]
+                    highest_high = sub_df['High'].max()
+                    lowest_low = sub_df['Low'].min()
                     
-                elif prev_close >= lowest_low and close < lowest_low and state != "PUT":
-                    last_signals[key]["target"] = close - (atr_val * 2)
-                    last_signals[key]["stop"] = close + (atr_val * 1.5)
-                    last_signals[key]["state"] = "PUT"
-                    send_telegram_alert(f"🔴 P.BUY | {symbol.replace('.NS','')} ({tf}) | Entry: {close:.2f} | TG: {last_signals[key]['target']:.2f} | SL: {last_signals[key]['stop']:.2f}")
+                    atr_series = calculate_atr(df)
+                    atr_val = atr_series.iloc[-1]
                     
-        # ప్రతి 5 నిమిషాలకి ఒకసారి మార్కెట్ స్కాన్ అవుతుంది
+                    state = last_signals[key]["state"]
+                    target = last_signals[key]["target"]
+                    stop = last_signals[key]["stop"]
+                    
+                    # ---- CHECK EXITS FIRST ----
+                    if state == "CALL" and (close >= target or close <= stop):
+                        send_telegram_alert(f"🔶 C.EXIT | {symbol.replace('.NS','')} ({tf}) | Price: {close:.2f}")
+                        last_signals[key]["state"] = None
+                    elif state == "PUT" and (close <= target or close >= stop):
+                        send_telegram_alert(f"🔶 P.EXIT | {symbol.replace('.NS','')} ({tf}) | Price: {close:.2f}")
+                        last_signals[key]["state"] = None
+                        
+                    # ---- CHECK NEW ENTRIES ----
+                    elif prev_close <= highest_high and close > highest_high and state != "CALL":
+                        last_signals[key]["target"] = close + (atr_val * 2)
+                        last_signals[key]["stop"] = close - (atr_val * 1.5)
+                        last_signals[key]["state"] = "CALL"
+                        send_telegram_alert(f"🟢 C.BUY | {symbol.replace('.NS','')} ({tf}) | Entry: {close:.2f} | TG: {last_signals[key]['target']:.2f} | SL: {last_signals[key]['stop']:.2f}")
+                        
+                    elif prev_close >= lowest_low and close < lowest_low and state != "PUT":
+                        last_signals[key]["target"] = close - (atr_val * 2)
+                        last_signals[key]["stop"] = close + (atr_val * 1.5)
+                        last_signals[key]["state"] = "PUT"
+                        send_telegram_alert(f"🔴 P.BUY | {symbol.replace('.NS','')} ({tf}) | Entry: {close:.2f} | TG: {last_signals[key]['target']:.2f} | SL: {last_signals[key]['stop']:.2f}")
+                except:
+                    continue
+                    
         time.sleep(300)
 
 if __name__ == "__main__":
+    # ఎర్రర్ ఉన్నా లేకపోయినా సర్వర్ ఆన్ అవ్వగానే ఈ మెసేజ్ ముందే వెళ్ళిపోతుంది!
     send_telegram_alert("🚀 Daya Master V310 Live! Crypto & Indian Markets Loaded (15m, 1h, 2h, 3h, 4h)")
     scan_v310_market()
+            
