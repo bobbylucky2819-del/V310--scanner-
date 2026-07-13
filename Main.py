@@ -1,132 +1,133 @@
 import os
 import time
 import requests
-import pandas as pd
-import numpy as np
-import yfinance as yf
-from flask import Flask
-from threading import Thread
 
-app = Flask('')
+# -------------------------------------------------------------
+# ADVANCED RENDER / GITHUB CONFIGURATION ENGINE
+# -------------------------------------------------------------
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 
-@app.route('/')
-def home():
-    return "Bot is alive!", 200
-
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-
-keep_alive()
-
-# ---- కాన్ఫిగరేషన్ ----
-BOT_TOKEN = os.environ.get("NEW_BOT_TOKEN")
-CHAT_ID = os.environ.get("NEW_CHAT_ID")
-
-SYMBOLS = [
-    "BTC-USD", "ETH-USD", "XRP-USD", 
-    "SBIN.NS", "TATAMOTORS.NS", "RELIANCE.NS", "INFY.NS"
-]
-
-def send_telegram_alert(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": msg}, timeout=10)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
-
-def calculate_atr(df, period=14):
-    high_low = df['High'] - df['Low']
-    high_cp = np.abs(df['High'] - df['Close'].shift(1))
-    low_cp = np.abs(df['Low'] - df['Close'].shift(1))
-    df_tr = pd.DataFrame({'tr1': high_low, 'tr2': high_cp, 'tr3': low_cp})
-    tr = df_tr.max(axis=1)
-    return tr.ewm(alpha=1/period, adjust=False).mean()
-
-def fetch_live_data(symbol, interval):
-    try:
-        yf_interval = interval
-        if interval in ["2h", "3h"]:
-            yf_interval = "1h"
-            
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period="7d", interval=yf_interval)
+class DayaMasterObserverEngine:
+    def __init__(self, symbol="RELIANCE", timeframe="1h"):
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.state = 0  # 0 = FLAT, 1 = BUY ACTIVE
         
-        if df.empty or len(df) < 15:
-            return None
-            
-        if interval == "2h":
-            df = df.resample('2h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-        elif interval == "3h":
-            df = df.resample('3h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-            
-        return df[['High', 'Low', 'Close']]
-    except:
-        return None
+        # Matrix Positioning Variables
+        self.entry_price = 0.0
+        self.target_price = 0.0
+        self.stop_loss = 0.0
+        self.peak_price = 0.0
+        
+        # Time Scales
+        self.start_time = ""
+        self.entry_timestamp = 0
+        
+        # Structural Verification Tags
+        self.mbs_status = "[ ]"
+        self.mrs_status = "[ ]"
+        self.back_marks = "[SMC Sweep + CHOCH Valid]"
 
-def scan_v310_market():
-    print("🚀 V310 Crypto & Indian Markets Scanner is live...")
-    TIMEFRAMES = ["15m", "1h", "2h", "3h", "4h"]
-    
-    global last_signals
-    last_signals = {}
-    
-    while True:
-        for symbol in SYMBOLS:
-            for tf in TIMEFRAMES:
-                key = f"{symbol}_{tf}"
-                if key not in last_signals:
-                    last_signals[key] = {"state": None, "target": 0.0, "stop": 0.0}
-                    
-                df = fetch_live_data(symbol, tf)
-                if df is None or len(df) < 10:
-                    continue
-                    
-                try:
-                    close = df['Close'].iloc[-1]
-                    prev_close = df['Close'].iloc[-2]
-                    
-                    sub_df = df.iloc[-8:-1]
-                    highest_high = sub_df['High'].max()
-                    lowest_low = sub_df['Low'].min()
-                    
-                    atr_series = calculate_atr(df)
-                    atr_val = atr_series.iloc[-1]
-                    
-                    state = last_signals[key]["state"]
-                    target = last_signals[key]["target"]
-                    stop = last_signals[key]["stop"]
-                    
-                    # ---- CHECK EXITS FIRST ----
-                    if state == "CALL" and (close >= target or close <= stop):
-                        send_telegram_alert(f"🔶 C.EXIT | {symbol.replace('.NS','')} ({tf}) | Price: {close:.2f}")
-                        last_signals[key]["state"] = None
-                    elif state == "PUT" and (close <= target or close >= stop):
-                        send_telegram_alert(f"🔶 P.EXIT | {symbol.replace('.NS','')} ({tf}) | Price: {close:.2f}")
-                        last_signals[key]["state"] = None
-                        
-                    # ---- CHECK NEW ENTRIES ----
-                    elif prev_close <= highest_high and close > highest_high and state != "CALL":
-                        last_signals[key]["target"] = close + (atr_val * 2)
-                        last_signals[key]["stop"] = close - (atr_val * 1.5)
-                        last_signals[key]["state"] = "CALL"
-                        send_telegram_alert(f"🟢 C.BUY | {symbol.replace('.NS','')} ({tf}) | Entry: {close:.2f} | TG: {last_signals[key]['target']:.2f} | SL: {last_signals[key]['stop']:.2f}")
-                        
-                    elif prev_close >= lowest_low and close < lowest_low and state != "PUT":
-                        last_signals[key]["target"] = close - (atr_val * 2)
-                        last_signals[key]["stop"] = close + (atr_val * 1.5)
-                        last_signals[key]["state"] = "PUT"
-                        send_telegram_alert(f"🔴 P.BUY | {symbol.replace('.NS','')} ({tf}) | Entry: {close:.2f} | TG: {last_signals[key]['target']:.2f} | SL: {last_signals[key]['stop']:.2f}")
-                except:
-                    continue
-                    
-        time.sleep(300)
-
-if __name__ == "__main__":
-    # ఎర్రర్ ఉన్నా లేకపోయినా సర్వర్ ఆన్ అవ్వగానే ఈ మెసేజ్ ముందే వెళ్ళిపోతుంది!
-    send_telegram_alert("🚀 Daya Master V310 Live! Crypto & Indian Markets Loaded (15m, 1h, 2h, 3h, 4h)")
-    scan_v310_market()
+    def send_telegram_matrix(self, box_str, text_msg):
+        """Sends absolute raw text representation and custom header notification directly to Telegram."""
+        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+            print("Error: Telegram credentials missing in Environment variables!")
+            return
             
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        
+        # 1. Advanced Alert Header Send
+        payload_header = {"chat_id": TELEGRAM_CHAT_ID, "text": text_msg, "parse_mode": "Markdown"}
+        # 2. Complete Live Execution Box Send (MarkdownV2 pre-formatted blocks code wrap)
+        escaped_box = box_str.replace('.', '\\.').replace('-', '\\-').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('|', '\\|')
+        payload_box = {"chat_id": TELEGRAM_CHAT_ID, "text": f"```text\n{escaped_box}\n```", "parse_mode": "MarkdownV2"}
+        
+        try:
+            requests.post(url, json=payload_header, timeout=5)
+            requests.post(url, json=payload_box, timeout=5)
+        except Exception as e:
+            print(f"Telegram Engine Network Delay: {e}")
+
+    def generate_live_box_string(self, ltp, current_time_str, time_run_mins, status_str, result_str):
+        """Renders the exact textual observer box structural alignment."""
+        box = (
+            f"┌──────────────────────────────────────────────┐\n"
+            f"│        🏆 DAYA MASTER LIVE OBSERVER          │\n"
+            f"├──────────────────────────────────────────────┤\n"
+            f"│ 🪙 Symbol     : {self.symbol} ({self.timeframe} Frame Engine)  │\n"
+            f"│ 📅 Start Time : {self.start_time}                     │\n"
+            f"│ ⏱️ Present Time: {current_time_str} [LIVE LOG]         │\n"
+            f"├──────────────────────────────────────────────┤\n"
+            f"│ 💰 Entry price: {self.entry_price:<10.2f} 🛑 Stop loss: {self.stop_loss:<10.2f}│\n"
+            f"│ 🎯 Target     : {self.target_price:<10.2f} ⏳ Status   : {status_str:<10}  │\n"
+            f"├──────────────────────────────────────────────┤\n"
+            f"│ 🟢 M.B.S. 🔴  : {self.mbs_status:<29}  │\n"
+            f"│ ⚠️ M.R.S.      : {self.mrs_status:<29}  │\n"
+            f"├──────────────────────────────────────────────┤\n"
+            f"│ ⏰ Time Run   : {time_run_mins:<3} Mins [1m - 60m Scale]     │\n"
+            f"│ 📉 Back Marks : {self.back_marks:<29}  │\n"
+            f"│ 📈 M.price live: [ {ltp:<7.2f} ]                 │\n"
+            f"├──────────────────────────────────────────────┤\n"
+            f"│ 🏁 Result     : {result_str:<28} │\n"
+            f"└──────────────────────────────────────────────┘"
+        )
+        return box
+
+    def execute_tick_runtime(self, ltp, anchored_vwap, highest_high_7, atr, volume, volume_ma_20):
+        """Pure speed condition verification logic engine loop."""
+        current_time_str = time.strftime("%I:%M %p")
+        
+        # --- 1. BUY ENTRY TRACKING (M.B.S TRIGGER) ---
+        is_high_volume_injection = volume > (volume_ma_20 * 1.8)
+        buy_trigger = (ltp > highest_high_7) and (ltp > anchored_vwap) and is_high_volume_injection and (self.state == 0)
+        
+        if buy_trigger:
+            self.state = 1
+            self.entry_price = ltp
+            self.peak_price = ltp
+            self.target_price = ltp + (atr * 2.0)
+            self.stop_loss = ltp - (atr * 1.5)
+            self.start_time = current_time_str
+            self.entry_timestamp = time.time()
+            
+            self.mbs_status = "[✅] Bullish (Green Dot)"
+            self.mrs_status = "[ ]"
+            
+            box_output = self.generate_live_box_string(ltp, current_time_str, 0, "ACTIVE", "RUNNING MATRIX")
+            alert_msg = "🔥 *ADVANCE TRADE:* NEW INITIALIZATION TRIGGERED 🔥"
+            self.send_telegram_matrix(box_output, alert_msg)
+            return
+
+        # --- 2. RUNNING POSITION EVALUATION LOOP ---
+        if self.state == 1:
+            self.peak_price = max(ltp, self.peak_price)
+            time_run_mins = int((time.time() - self.entry_timestamp) // 60)
+            
+            # Reversal & Boundary Condition Checks
+            points_drop_from_peak = self.peak_price - ltp
+            mrs_reversal_hit = points_drop_from_peak >= 3.0
+            target_hit = ltp >= self.target_price
+            stop_loss_hit = ltp <= self.stop_loss
+            
+            # --- 3. CRITICAL SINGLE-TICK CLOSE ENGINE ---
+            if target_hit or mrs_reversal_hit or stop_loss_hit:
+                if target_hit:
+                    self.mbs_status = "[✅] Bullish (PROFIT HIT)"
+                    result_str = f"{self.target_price:.2f} (TARGET DONE) ✅"
+                    alert_msg = "💰 *ADVANCE TRADE CLOSED: TARGET HIT* 💰"
+                elif mrs_reversal_hit:
+                    self.mrs_status = "[✅] 3-Pt Reversal Triggered"
+                    result_str = f"{ltp:.2f} (M.R.S. LOCKED) ✅"
+                    alert_msg = "⚠️ *ADVANCE TRADE CLOSED: MRS REVERSAL* ⚠️"
+                else:
+                    result_str = f"{self.stop_loss:.2f} (STOP LOSS) ❌"
+                    alert_msg = "🚨 *ADVANCE TRADE CLOSED: STOPLOSS* 🚨"
+                
+                # Render Final Complete Data Box Structure & Send
+                final_box = self.generate_live_box_string(ltp, current_time_str, time_run_mins, "CLOSED", result_str)
+                self.send_telegram_matrix(final_box, alert_msg)
+                
+                # Instant State Clean Reset
+                self.state = 0
+        
