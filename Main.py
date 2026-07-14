@@ -5,8 +5,8 @@ import requests
 # -------------------------------------------------------------
 # ADVANCED RENDER / GITHUB CONFIGURATION ENGINE
 # -------------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = 8736794778:AAHusM5e2JCHty4KDx6QKdZl26SeY65s5d4("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID   = -1004423772510("TELEGRAM_CHAT_ID")
 
 class DayaMasterObserverEngine:
     def __init__(self, symbol="RELIANCE", timeframe="1h"):
