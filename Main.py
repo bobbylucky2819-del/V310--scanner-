@@ -2,6 +2,19 @@ import os
 import time
 import datetime
 import requests
+from threading import Thread
+from flask import Flask
+
+# --- Render Port Binding Fix (డమ్మీ వెబ్ సర్వర్) ---
+app = Flask(__name__)
+@app.route('/')
+def home():
+    return "Daya SMC Engine is Running!"
+
+def run_web_server():
+    # Render ఆటోమేటిక్‌గా PORT ఎన్విరాన్‌మెంట్ వేరియబుల్ ఇస్తుంది, లేకపోతే 10000 తీసుకుంటుంది
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 # -------------------------------------------------------------
 # SYSTEM CREDENTIAL MANAGEMENT
@@ -15,18 +28,16 @@ class DayaSMCIntradayEngine:
         self.timeframe = timeframe
         self.state = 0  # 0 = FLAT, 1 = BUY ACTIVE, -1 = SELL/PUT ACTIVE
         
-        # Matrix Positioning Variables
         self.entry_price = 0.0
         self.target_price = 0.0
         self.stop_loss = 0.0
         self.peak_price = 0.0
         self.entry_timestamp = 0
-        self.side = "" # "BUY" or "SELL/C.SEL"
+        self.side = "" 
         
-        # Professional Institutional SMC State Trackers
         self.mbs_status = "[ ]"
         self.mrs_status = "[ ]"
-        self.live_msg_id = None  # Strict 1-Box Tracking Pipeline
+        self.live_msg_id = None  
         
         self.is_forex = symbol.endswith("USD") or "-" in symbol or len(symbol) == 6
 
@@ -87,7 +98,7 @@ class DayaSMCIntradayEngine:
 
         delta_volume_breakout = delta_volume > 1.8  
         
-        # 🟢 A. CALL SIDE / BUY LOGIC (Liquidity Swept at Bottom)
+        # 🟢 CALL SIDE / BUY
         buy_trigger = (
             (ltp <= prev_day_low or ltp <= volume_profile_poc) and 
             (institutional_order_flow == "BULLISH_INJECTION") and (ltp > anchored_vwap and ltp > highest_high_7) and 
@@ -95,7 +106,7 @@ class DayaSMCIntradayEngine:
             (self.state == 0)
         )
         
-        # 🔴 B. PUT SIDE / C.SEL LOGIC (Liquidity Swept at Top - Bearish Breakout)
+        # 🔴 PUT SIDE / C.SEL
         sell_trigger = (
             (ltp >= prev_day_high or ltp >= volume_profile_poc) and 
             (institutional_order_flow == "BEARISH_INJECTION") and (ltp < anchored_vwap and ltp < lowest_low_7) and 
@@ -103,7 +114,6 @@ class DayaSMCIntradayEngine:
             (self.state == 0)
         )
         
-        # --- ENTRY ORDERS BLOCK ---
         if buy_trigger:
             self.state = 1
             self.side = "BUY / CALL SIDE"
@@ -120,7 +130,7 @@ class DayaSMCIntradayEngine:
             self.state = -1
             self.side = "PUT SIDE / C.SEL"
             self.entry_price = ltp
-            self.peak_price = ltp  # Short trade లో peak అంటే లోయెస్ట్ ప్రైస్ ట్రాక్ చేస్తుంది
+            self.peak_price = ltp  
             self.target_price = ltp - (0.0050 if self.is_forex else 50.0)
             self.stop_loss = ltp + (0.0020 if self.is_forex else 20.0)
             self.entry_timestamp = time.time()
@@ -128,20 +138,19 @@ class DayaSMCIntradayEngine:
             self.send_telegram_matrix(self.generate_live_box_string(ltp, 0, "PROFIT/LOSS RUNNING"), f"💥 *SMC PUT SIDE / C.SEL TRIGGERED ({self.timeframe})* 💥", False)
             return
         
-        # --- LIVE RUNTIME MONITORING & EXIT BLOCK ---
         if self.state != 0:
             time_run_mins = int((time.time() - self.entry_timestamp) // 60)
             mrs_threshold = 0.0003 if self.is_forex else 3.0
             
-            if self.state == 1:  # Buy Active
+            if self.state == 1:  
                 self.peak_price = max(ltp, self.peak_price)
                 current_diff = ltp - self.entry_price
                 mrs_reversal_hit = (self.peak_price - ltp >= mrs_threshold)
                 target_hit = ltp >= self.target_price
                 stop_loss_hit = ltp <= self.stop_loss
-            else:  # Sell / Put Active
+            else:  
                 self.peak_price = min(ltp, self.peak_price) if self.peak_price != 0 else ltp
-                current_diff = self.entry_price - ltp  # Short trade లో ప్రైస్ తగ్గుతుంటే ప్రాఫిట్
+                current_diff = self.entry_price - ltp  
                 mrs_reversal_hit = (ltp - self.peak_price >= mrs_threshold)
                 target_hit = ltp <= self.target_price
                 stop_loss_hit = ltp >= self.stop_loss
@@ -167,10 +176,16 @@ class DayaSMCIntradayEngine:
                 self.send_telegram_matrix(self.generate_live_box_string(ltp, time_run_mins, pnl_live), f"⏳ *TRADING REALTIME MONITORING ACTIVE ({self.timeframe})* ⏳", True)
 
 if __name__ == "__main__":
+    # --- Flask వెబ్ సర్వర్‌ని బ్యాక్‌గ్రౌండ్‌లో రన్ చేస్తాం (Port Error రాకుండా ఉండటానికి) ---
+    server_thread = Thread(target=run_web_server)
+    server_thread.daemon = True
+    server_thread.start()
+
     tfs = ["15m", "30m", "1h", "2h", "3h", "4h", "1d"]
     assets = ["RELIANCE", "TCS", "INFY", "SBIN", "EURUSD", "GBPUSD", "BTC-USD"]
     matrix = {a: {t: DayaSMCIntradayEngine(a, t) for t in tfs} for a in assets}
-    print("Daya Master V62 Double-Sided SMC Engine Online.")
+    print("Daya Master V62 SMC Engine with Flask Port Binder Online.")
+    
     while True:
         time.sleep(60)
-            
+    
