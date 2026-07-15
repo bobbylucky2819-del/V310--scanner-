@@ -12,7 +12,6 @@ def home():
     return "Daya SMC Engine is Running!"
 
 def run_web_server():
-    # Render ఆటోమేటిక్‌గా PORT ఎన్విరాన్‌మెంట్ వేరియబుల్ ఇస్తుంది, లేకపోతే 10000 తీసుకుంటుంది
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
@@ -21,6 +20,18 @@ def run_web_server():
 # -------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = "8736794778:AAHusM5e2JCHty4KDx6QKdZl26SeY65s5d4"
 TELEGRAM_CHAT_ID   = "-1004423772510"
+
+def send_startup_alert():
+    """
+    సర్వర్ ఆన్ అవ్వగానే టెలిగ్రామ్ కి పంపే డైరెక్ట్ టెస్ట్ కనెక్షన్ మెసేజ్
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
+    text = "🚀 *Daya Master V62 SMC Engine Connected Successfully!* 🚀\n\n🟢 Server Status: ONLINE\n📈 Markets Loaded: Crypto, Forex & Indian Markets (Intraday Ready)\n⚙️ Strategy: SMC Double-Sided (Call/Put & Liquidity Grab)"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=5)
+    except Exception as e:
+        print(f"Startup Telegram Error: {e}")
 
 class DayaSMCIntradayEngine:
     def __init__(self, symbol, timeframe):
@@ -176,16 +187,18 @@ class DayaSMCIntradayEngine:
                 self.send_telegram_matrix(self.generate_live_box_string(ltp, time_run_mins, pnl_live), f"⏳ *TRADING REALTIME MONITORING ACTIVE ({self.timeframe})* ⏳", True)
 
 if __name__ == "__main__":
-    # --- Flask వెబ్ సర్వర్‌ని బ్యాక్‌గ్రౌండ్‌లో రన్ చేస్తాం (Port Error రాకుండా ఉండటానికి) ---
+    # --- Flask వెబ్ సర్వర్ బ్యాక్‌గ్రౌండ్‌లో రన్ చేస్తాం ---
     server_thread = Thread(target=run_web_server)
     server_thread.daemon = True
     server_thread.start()
 
+    # --- టెలిగ్రామ్ కనెక్షన్ ఆక్టివ్ గా ఉందో లేదో వెరిఫై చేస్తాం ---
+    send_startup_alert()
+
     tfs = ["15m", "30m", "1h", "2h", "3h", "4h", "1d"]
     assets = ["RELIANCE", "TCS", "INFY", "SBIN", "EURUSD", "GBPUSD", "BTC-USD"]
     matrix = {a: {t: DayaSMCIntradayEngine(a, t) for t in tfs} for a in assets}
-    print("Daya Master V62 SMC Engine with Flask Port Binder Online.")
+    print("Daya Master V62 SMC Engine and Verification Matrix Loaded Successfully.")
     
     while True:
         time.sleep(60)
-    
