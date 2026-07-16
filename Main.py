@@ -11,20 +11,20 @@ except ImportError:
     os.system('pip install yfinance')
     import yfinance as yf
 
-# --- FLASK PORT BINDER FOR RENDER ---
+# --- FLASK ENVIRONMENT FOR RENDER DEPLOY ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Daya SMC Engine V62 Active"
+def home(): return "Daya SMC Final V63 Architecture Online"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# --- SYSTEM SETTINGS ---
+# --- TELEGRAM MATRIX INTEGRATION ---
 TELEGRAM_BOT_TOKEN = "8736794778:AAHusM5e2JCHty4KDx6QKdZl26SeY65s5d4"
 TELEGRAM_CHAT_ID   = "-1004423772510"
 
-class DayaSMCUltimateEngine:
+class DayaSMCMasterV63:
     def __init__(self, symbol, yahoo_ticker):
         self.symbol = symbol
         self.yahoo_ticker = yahoo_ticker
@@ -41,17 +41,18 @@ class DayaSMCUltimateEngine:
 
     def check_market_timing(self):
         """
-        💸 IND vs FOREX Timing Block Filter
+        ⏰ Strict Timing Filter: Indian Segment vs Forex Segment
         """
         now = datetime.datetime.now()
         if self.is_forex:
-            return True # Forex/Crypto running 24/7
-        # Indian Market Timing Strict Check (Mon-Fri, 9:15 AM to 3:30 PM)
+            return True  # Forex/Crypto operates 24/7 without delays
         if now.weekday() >= 5: return False
         current_time_int = now.hour * 100 + now.minute
         return 915 <= current_time_int <= 1530
 
     def generate_live_box_string(self, ltp, time_run_mins, final_pnl_str):
+        # 📊 Full Size Original Telegram Matrix Layout
+        fmt = "6.4f" if self.is_forex else "6.2f"
         return (
             f"┌──────────────────────────────────────────────┐\n"
             f"│ 🟢 greendot running: {self.symbol:<7}                     │\n"
@@ -59,9 +60,9 @@ class DayaSMCUltimateEngine:
             f"├──────────────────────────────────────────────┤\n"
             f"│  my box -> Live trading (indian/forex)       │\n"
             f"├──────────────────────────────────────────────┤\n"
-            f"│ 🪙 Start  — {self.entry_price:<6.2f}  →  🛑 Stop loss — {self.stop_loss:<5.2f} │\n"
-            f"│ 🎯 Target — {self.target_price:<6.2f}                           │\n"
-            f"│ 📈 Live   — {ltp:<6.2f}                             │\n"
+            f"│ 🪙 Start  — {self.entry_price:<{fmt}}  →  🛑 Stop loss — {self.stop_loss:<{fmt}} │\n"
+            f"│ 🎯 Target — {self.target_price:<{fmt}}                           │\n"
+            f"│ 📈 Live   — {ltp:<{fmt}}                             │\n"
             f"│ ⏰ Time   — [{time_run_mins:<2}m] -- 60m Scale               │\n"
             f"├──────────────────────────────────────────────┤\n"
             f"│ 🟢 M.B.S. — {self.mbs_status:<32} │\n"
@@ -97,31 +98,33 @@ class DayaSMCUltimateEngine:
             df = ticker.history(period="3d", interval="15m")
             if df.empty or len(df) < 5: return
             
-            # 1. Price Action Variables
             ltp = df['Close'].iloc[-1]
             current_vol = df['Volume'].iloc[-1]
             
-            # 2. Before Day High / Day Low Markings
+            # 1. Before Day High / Day Low Markings
             prev_day_df = ticker.history(period="2d", interval="1d")
             if len(prev_day_df) < 2: return
             pdh = prev_day_df['High'].iloc[-2]
             pdl = prev_day_df['Low'].iloc[-2]
             
-            # 3. Anchor VWAP & Volume Profile POC (Math Estimations)
+            # 2. Institutional Order Flow (Anchor VWAP & Volume Profile POC)
             avg_volume = df['Volume'].mean()
-            poc_price = df['Close'].rolling(window=4).mean().iloc[-1]
-            anchored_vwap = (df['Close'] * df['Volume']).sum() / df['Volume'].sum()
+            anchored_vwap = (df['Close'] * df['Volume']).sum() / df['Volume'].sum() if df['Volume'].sum() > 0 else df['Close'].mean()
             
-            # 4. Delta Volume Trigger
-            delta_volume = current_vol / (avg_volume if avg_volume > 0 else 1)
-            delta_volume_breakout = delta_volume > 1.8
-            
-            # 5. Accumulation & Manipulation Engine
+            # 3. Delta Volume & Fake Breakouts Identification
+            if self.is_forex:
+                delta_volume_breakout = True  # Forex has decentralized volumes, bypassed to prevent lockups
+            else:
+                delta_volume = current_vol / (avg_volume if avg_volume > 0 else 1)
+                delta_volume_breakout = delta_volume > 1.8
+
+            # 4. Accumulation / Manipulation Boundary Filter
             is_accumulation = df['High'].tail(4).max() - df['Low'].tail(4).min() < (ltp * 0.003)
+            
+            # 5. Core SMC Liquidity Grab Execution
             liquidity_grab_buy = (df['Low'].iloc[-2] < pdl or ltp < pdl) and ltp > anchored_vwap
             liquidity_grab_sell = (df['High'].iloc[-2] > pdh or ltp > pdh) and ltp < anchored_vwap
             
-            # --- SMC TRIGGER MAPPING ---
             buy_trigger = (liquidity_grab_buy and delta_volume_breakout and not is_accumulation and self.state == 0)
             sell_trigger = (liquidity_grab_sell and delta_volume_breakout and not is_accumulation and self.state == 0)
             
@@ -132,9 +135,9 @@ class DayaSMCUltimateEngine:
                 self.target_price = ltp + (0.0050 if self.is_forex else 50.0)
                 self.stop_loss = ltp - (0.0020 if self.is_forex else 20.0)
                 self.entry_timestamp = time.time()
-                self.mbs_status = "[🟢 Green Dot Active]"
+                self.mbs_status = "[🟢 Structure Break Active]"
                 self.mrs_status = "[🔥 OrderFlow Injection]"
-                self.send_telegram_matrix(self.generate_live_box_string(ltp, 0, "RUNNING"), f"🚀 *SMC LIQUIDITY GRAB BUY TRIGGERED ({self.symbol})* 🚀", False)
+                self.send_telegram_matrix(self.generate_live_box_string(ltp, 0, "RUNNING"), f"🚀 *SMC LIQUIDITY GRAB BUY DETECTED ({self.symbol})* 🚀", False)
                 return
 
             elif sell_trigger:
@@ -144,12 +147,12 @@ class DayaSMCUltimateEngine:
                 self.target_price = ltp - (0.0050 if self.is_forex else 50.0)
                 self.stop_loss = ltp + (0.0020 if self.is_forex else 20.0)
                 self.entry_timestamp = time.time()
-                self.mbs_status = "[🔴 Red Dot Active]"
+                self.mbs_status = "[🔴 Structure Break Active]"
                 self.mrs_status = "[💥 Manipulation Hunt]"
-                self.send_telegram_matrix(self.generate_live_box_string(ltp, 0, "RUNNING"), f"💥 *SMC LIQUIDITY GRAB PUT TRIGGERED ({self.symbol})* 💥", False)
+                self.send_telegram_matrix(self.generate_live_box_string(ltp, 0, "RUNNING"), f"💥 *SMC LIQUIDITY GRAB PUT DETECTED ({self.symbol})* 💥", False)
                 return
 
-            # --- MONITORING LOOP LOOP ---
+            # --- DYNAMIC RE-TRAIL / EXIT TRACKING LOOP ---
             if self.state != 0:
                 time_run_mins = int((time.time() - self.entry_timestamp) // 60)
                 current_diff = (ltp - self.entry_price) if self.state == 1 else (self.entry_price - ltp)
@@ -160,37 +163,37 @@ class DayaSMCUltimateEngine:
                 if target_hit or stop_hit:
                     if target_hit:
                         self.mbs_status = "[✅ Distribution Complete]"
-                        res_str = f"PROFIT: +{current_diff:.2f}"
+                        res_str = f"PROFIT: +{current_diff:.4f}"
                         msg = f"💰 *SMC TARGET DISTRIBUTED ({self.symbol})* 💰"
                     else:
-                        self.mbs_status = "[❌ Breakout Faileded]"
-                        res_str = f"LOSS: {current_diff:.2f}"
+                        self.mbs_status = "[❌ Breakout Failed]"
+                        res_str = f"LOSS: {current_diff:.4f}"
                         msg = f"🚨 *SMC STOPLOSS HIT IN HUNT ({self.symbol})* 🚨"
                     
                     self.send_telegram_matrix(self.generate_live_box_string(ltp, time_run_mins, res_str), msg, True)
                     self.state, self.live_msg_id = 0, None
                 else:
-                    pnl_live = f"PROFIT: +{current_diff:.2f}" if current_diff >= 0 else f"LOSS: {current_diff:.2f}"
+                    pnl_live = f"PROFIT: +{current_diff:.4f}" if current_diff >= 0 else f"LOSS: {current_diff:.4f}"
                     self.send_telegram_matrix(self.generate_live_box_string(ltp, time_run_mins, pnl_live), f"⏳ *TRADING REALTIME MONITORING ({self.symbol})* ⏳", True)
                     
         except Exception as e:
-            print(f"SMC Execution Scan Error: {e}")
+            print(f"Core Execution Exception: {e}")
 
 if __name__ == "__main__":
     Thread(target=run_web_server, daemon=True).start()
     
-    # Target Major Vectors Scanners Setup (.NS is Indian market NSE)
+    # 📈 Target Watchlist Core Integration
     matrix_watch = [
-        DayaSMCUltimateEngine("RELIANCE", "RELIANCE.NS"),
-        DayaSMCUltimateEngine("SBIN", "SBIN.NS"),
-        DayaSMCUltimateEngine("TCS", "TCS.NS"),
-        DayaSMCUltimateEngine("INFY", "INFY.NS"),
-        DayaSMCUltimateEngine("EURUSD", "EURUSD=X"),
-        DayaSMCUltimateEngine("BTC-USD", "BTC-USD")
+        DayaSMCMasterV63("RELIANCE", "RELIANCE.NS"),
+        DayaSMCMasterV63("SBIN", "SBIN.NS"),
+        DayaSMCMasterV63("TCS", "TCS.NS"),
+        DayaSMCMasterV63("INFY", "INFY.NS"),
+        DayaSMCMasterV63("EURUSD", "EURUSD=X"),
+        DayaSMCMasterV63("BTC-USD", "BTC-USD")
     ]
     
-    print("Daya Master V62 Architecture Systems Online.")
+    print("Daya Master V63 Final System Online. Matrix Loop Initiated.")
     while True:
         for engine in matrix_watch:
             engine.execute_logic()
-        time.sleep(30) # Scans every 30 seconds smoothly
+        time.sleep(30)
