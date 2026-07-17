@@ -190,6 +190,13 @@ matrix_watch = [
 
 def start_trading_loop():
     print("🚀 Daya Master V65 Engine Online & Scanning...")
+    # బాట్ అసలు పనిచేస్తుందో లేదో చెక్ చేయడానికి ఒక స్టార్టింగ్ మెసేజ్
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "🤖 Daya SMC Engine V65 Active & Connected Successfully!"}, timeout=5)
+    except Exception as e:
+        print(f"Telegram Init Test Failed: {e}")
+        
     while True:
         for engine in matrix_watch:
             engine.execute_logic()
