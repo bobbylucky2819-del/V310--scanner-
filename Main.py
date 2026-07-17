@@ -13,6 +13,7 @@ except ImportError:
     import yfinance as yf
     import pytz
 
+# --- FLASK PORT BINDER FOR RENDER ---
 app = Flask(__name__)
 @app.route('/')
 def home(): return "Daya SMC Engine V65 Scalper Active"
@@ -21,6 +22,7 @@ def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
+# --- SYSTEM SETTINGS ---
 TELEGRAM_BOT_TOKEN = "8736794778:AAHusM5e2JCHty4KDx6QKdZl26SeY65s5d4"
 TELEGRAM_CHAT_ID   = "-1004423772510"
 IST = pytz.timezone('Asia/Kolkata')
@@ -29,7 +31,7 @@ class DayaSMCEngineV65:
     def __init__(self, symbol, yahoo_ticker):
         self.symbol = symbol
         self.yahoo_ticker = yahoo_ticker
-        self.state = 0  
+        self.state = 0  # 0 = FLAT, 1 = BUY, -1 = SELL
         self.entry_price = 0.0
         self.target_price = 0.0
         self.stop_loss = 0.0
@@ -71,7 +73,6 @@ class DayaSMCEngineV65:
 
     def send_telegram_matrix(self, box_str, text_msg, update_existing=False):
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
-        # HTML Parse Mode కోసం సేఫ్ ఫార్మాటింగ్
         formatted_text = f"{text_msg}\n\n<pre>{box_str}</pre>"
         
         if update_existing and self.live_msg_id:
@@ -177,20 +178,26 @@ class DayaSMCEngineV65:
         except Exception as e:
             print(f"Core Execution Exception for {self.symbol}: {e}")
 
-if __name__ == "__main__":
-    Thread(target=run_web_server, daemon=True).start()
-    
-    matrix_watch = [
-        DayaSMCEngineV65("RELIANCE", "RELIANCE.NS"),
-        DayaSMCEngineV65("SBIN", "SBIN.NS"),
-        DayaSMCEngineV65("TCS", "TCS.NS"),
-        DayaSMCEngineV65("INFY", "INFY.NS"),
-        DayaSMCEngineV65("EURUSD", "EURUSD=X"),
-        DayaSMCEngineV65("BTC-USD", "BTC-USD")
-    ]
-    
-    print("Daya Master V65 Engine Online.")
+# --- ENGINE INITIALIZATION & START ---
+matrix_watch = [
+    DayaSMCEngineV65("RELIANCE", "RELIANCE.NS"),
+    DayaSMCEngineV65("SBIN", "SBIN.NS"),
+    DayaSMCEngineV65("TCS", "TCS.NS"),
+    DayaSMCEngineV65("INFY", "INFY.NS"),
+    DayaSMCEngineV65("EURUSD", "EURUSD=X"),
+    DayaSMCEngineV65("BTC-USD", "BTC-USD")
+]
+
+def start_trading_loop():
+    print("🚀 Daya Master V65 Engine Online & Scanning...")
     while True:
         for engine in matrix_watch:
             engine.execute_logic()
-        time.sleep(60) # Yahoo block అవ్వకుండా 60 సెకన్ల గ్యాప్
+        time.sleep(60)
+
+# Render బ్యాక్‌గ్రౌండ్ కోసం త్రెడ్ స్టార్ట్
+Thread(target=start_trading_loop, daemon=True).start()
+
+if __name__ == "__main__":
+    run_web_server()
+    
