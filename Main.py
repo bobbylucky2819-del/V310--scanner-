@@ -194,4 +194,3 @@ if __name__ == "__main__":
         for engine in matrix_watch:
             engine.execute_logic()
         time.sleep(60) # Yahoo block అవ్వకుండా 60 సెకన్ల గ్యాప్
-    
