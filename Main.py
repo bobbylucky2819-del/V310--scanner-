@@ -15,7 +15,7 @@ except ImportError:
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Daya SMC V67 Ultimate Engine Active"
+def home(): return "Daya SMC V67.1 Engine Active"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -58,11 +58,139 @@ class DayaSMCEngineV67:
             f"│ ⚠️ M.R.S. — {mrs:<32} │\n"
             f"├──────────────────────────────────────────────┤\n"
             f"│ 🏁 Final  → {res_str:<32} │\n"
-            └──────────────────────────────────────────────┘"
+            f"└──────────────────────────────────────────────┘"
         )
 
     def send_telegram_matrix(self, tf, box_str, text_msg, update_existing=False):
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
         escaped_box = box_str.replace('.', '\\.').replace('-', '\\-').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('|', '\\|')
-        formatted_text = f"{text_msg}\n\n```text\n{escaped_box}\n
+        formatted_text = f"{text_msg}\n\n```text\n{escaped_box}\n```"
         
+        if update_existing and self.tf_msg_ids[tf]:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+            try:
+                requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "message_id": self.tf_msg_ids[tf], "text": formatted_text, "parse_mode": "MarkdownV2"}, timeout=5)
+                return
+            except: return
+            
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        try:
+            res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": formatted_text, "parse_mode": "MarkdownV2"}, timeout=5).json()
+            if res.get("ok"): self.tf_msg_ids[tf] = res["result"]["message_id"]
+        except: pass
+
+    def execute_logic(self):
+        if not self.check_market_timing(): return
+        ticker = yf.Ticker(self.yahoo_ticker)
+
+        # ⚡ [RULE 1]: 1D FRAME - PURE DAILY HIGH/LOW LIQUIDITY GRAB
+        try:
+            time.sleep(1) # Rate Limit అవ్వకుండా చిన్న బ్రేక్
+            day_df = ticker.history(period="5d", interval="1d")
+            if not day_df.empty and len(day_df) >= 2:
+                d_ltp = day_df['Close'].iloc[-1]
+                pdh = day_df['High'].iloc[-2]
+                pdl = day_df['Low'].iloc[-2]
+                
+                day_grab_buy = (day_df['Low'].iloc[-1] < pdl) and d_ltp > pdl
+                day_grab_sell = (day_df['High'].iloc[-1] > pdh) and d_ltp < pdh
+                
+                if self.tf_states["1d"] == 0:
+                    if day_grab_buy:
+                        self.tf_states["1d"] = 1
+                        tgt = d_ltp + (0.0050 if self.is_forex else 80.0)
+                        sl = d_ltp - (0.0025 if self.is_forex else 35.0)
+                        box = self.generate_live_box_string("1d", "BUY / CALL SIDE", d_ltp, sl, tgt, d_ltp, "[🟢 Structure Break Active]", "[🔥 OrderFlow Injection]", "RUNNING")
+                        self.send_telegram_matrix("1d", box, f"🚀 *SMC 1D LIQUIDITY GRAB BUY ({self.symbol})* 🚀", False)
+                    elif day_grab_sell:
+                        self.tf_states["1d"] = -1
+                        tgt = d_ltp - (0.0050 if self.is_forex else 80.0)
+                        sl = d_ltp + (0.0025 if self.is_forex else 35.0)
+                        box = self.generate_live_box_string("1d", "PUT SIDE / C.SEL", d_ltp, sl, tgt, d_ltp, "[🔴 Structure Break Active]", "[💥 Manipulation Hunt]", "RUNNING")
+                        self.send_telegram_matrix("1d", box, f"💥 *SMC 1D LIQUIDITY GRAB PUT ({self.symbol})* 💥", False)
+                else:
+                    self.tf_states["1d"] = 0
+                    self.tf_msg_ids["1d"] = None
+        except Exception as e:
+            print(f"1D Core Logic Error for {self.symbol}: {e}")
+
+        # ⚡ [RULE 2]: INTRADAY TIMEFRAMES (1h, 2h, 3h, 4h) + ALL ORIGINAL V65 ADVANCED FILTERS
+        intraday_tfs = {"1h": ("1h", 24), "2h": ("1h", 48), "3h": ("1h", 72), "4h": ("1h", 96)}
+        
+        for tf, (interval, lookback) in intraday_tfs.items():
+            try:
+                time.sleep(1) # ప్రతీ టైమ్ ఫ్రేమ్ రిక్వెస్ట్ మధ్యలో 1 సెకను గ్యాప్ (Rate limit protection)
+                df = ticker.history(period="7d", interval=interval)
+                if df.empty or len(df) < (lookback + 5): continue
+                
+                ltp = df['Close'].iloc[-1]
+                current_vol = df['Volume'].iloc[-1]
+                
+                # A. Recent Swing Points
+                swing_high = df['High'].iloc[-(lookback+2):-2].max()
+                swing_low = df['Low'].iloc[-(lookback+2):-2].min()
+                
+                # B. Anchored VWAP Function
+                total_pv = (df['Close'].tail(lookback) * df['Volume'].tail(lookback)).sum()
+                total_v = df['Volume'].tail(lookback).sum()
+                anchored_vwap = total_pv / total_v if total_v > 0 else df['Close'].mean()
+                
+                # C. Delta Volume Breakout Filter
+                avg_volume = df['Volume'].tail(lookback).mean()
+                delta_volume = current_vol / (avg_volume if avg_volume > 0 else 1)
+                delta_volume_breakout = True if self.is_forex else (delta_volume > 1.2)
+                
+                # D. Accumulation Check Protection
+                is_accumulation = df['High'].tail(3).max() - df['Low'].tail(3).min() < (ltp * 0.0015)
+                
+                # E. Swing Liquid Grab Conditions (+ Markers)
+                grab_buy = (df['Low'].iloc[-2] < swing_low or df['Low'].iloc[-1] < swing_low) and ltp > swing_low and ltp > anchored_vwap
+                grab_sell = (df['High'].iloc[-2] > swing_high or df['High'].iloc[-1] > swing_high) and ltp < swing_high and ltp < anchored_vwap
+                
+                state = self.tf_states[tf]
+                
+                if state == 0:
+                    if grab_buy and delta_volume_breakout and not is_accumulation:
+                        self.tf_states[tf] = 1
+                        target = ltp + (0.0030 if self.is_forex else 50.0)
+                        sl = ltp - (0.0015 if self.is_forex else 20.0)
+                        box = self.generate_live_box_string(tf, "BUY / CALL SIDE (+)", ltp, sl, target, ltp, "[🟢 Structure Break Active]", "[🔥 OrderFlow Injection]", "RUNNING")
+                        self.send_telegram_matrix(tf, box, f"🚀 *SMC {tf} SWING GRAB BUY ({self.symbol}) [+]\\*", False)
+                    elif grab_sell and delta_volume_breakout and not is_accumulation:
+                        self.tf_states[tf] = -1
+                        target = ltp - (0.0030 if self.is_forex else 50.0)
+                        sl = ltp + (0.0015 if self.is_forex else 20.0)
+                        box = self.generate_live_box_string(tf, "PUT SIDE / C.SEL (+)", ltp, sl, target, ltp, "[🔴 Structure Break Active]", "[💥 Manipulation Hunt]", "RUNNING")
+                        self.send_telegram_matrix(tf, box, f"💥 *SMC {tf} SWING GRAB PUT ({self.symbol}) [+]\\*", False)
+                else:
+                    self.tf_states[tf] = 0
+                    self.tf_msg_ids[tf] = None
+            except Exception as e:
+                print(f"Error processing {tf} for {self.symbol}: {e}")
+
+# --- WATCHLIST CONFIGURATION ---
+matrix_watch = [
+    DayaSMCEngineV67("RELIANCE", "RELIANCE.NS"),
+    DayaSMCEngineV67("SBIN", "SBIN.NS"),
+    DayaSMCEngineV67("EURUSD", "EURUSD=X"),
+    DayaSMCEngineV67("BTC-USD", "BTC-USD")
+]
+
+def start_trading_loop():
+    print("🚀 Daya Master V67.1 Ultimate Multi-TF Engine Online...")
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "🤖 Daya SMC V67.1 Ultimate Engine Active & Rate-Limit Protected!"}, timeout=5)
+    except: pass
+
+    while True:
+        for engine in matrix_watch:
+            engine.execute_logic()
+            time.sleep(2) # ప్రతి సింబల్ స్కానింగ్ మధ్యలో 2 సెకన్ల గ్యాప్
+        time.sleep(300) # ప్రతి 5 నిమిషాలకు ఒకసారి మొత్తం లూప్ రన్ అవుతుంది
+
+Thread(target=start_trading_loop, daemon=True).start()
+
+if __name__ == "__main__":
+    run_web_server()
+    
