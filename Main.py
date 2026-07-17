@@ -11,20 +11,20 @@ except ImportError:
     os.system('pip install yfinance')
     import yfinance as yf
 
-# --- FLASK ENVIRONMENT FOR RENDER DEPLOY ---
+# --- FLASK PORT BINDER FOR RENDER ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Daya SMC Final V63 Architecture Online"
+def home(): return "Daya SMC Engine V65 Scalper Active"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# --- TELEGRAM MATRIX INTEGRATION ---
+# --- SYSTEM SETTINGS ---
 TELEGRAM_BOT_TOKEN = "8736794778:AAHusM5e2JCHty4KDx6QKdZl26SeY65s5d4"
 TELEGRAM_CHAT_ID   = "-1004423772510"
 
-class DayaSMCMasterV63:
+class DayaSMCEngineV65:
     def __init__(self, symbol, yahoo_ticker):
         self.symbol = symbol
         self.yahoo_ticker = yahoo_ticker
@@ -40,18 +40,13 @@ class DayaSMCMasterV63:
         self.is_forex = yahoo_ticker.endswith("=X") or "-" in symbol
 
     def check_market_timing(self):
-        """
-        ⏰ Strict Timing Filter: Indian Segment vs Forex Segment
-        """
         now = datetime.datetime.now()
-        if self.is_forex:
-            return True  # Forex/Crypto operates 24/7 without delays
+        if self.is_forex: return True
         if now.weekday() >= 5: return False
         current_time_int = now.hour * 100 + now.minute
         return 915 <= current_time_int <= 1530
 
     def generate_live_box_string(self, ltp, time_run_mins, final_pnl_str):
-        # 📊 Full Size Original Telegram Matrix Layout
         fmt = "6.4f" if self.is_forex else "6.2f"
         return (
             f"┌──────────────────────────────────────────────┐\n"
@@ -95,33 +90,31 @@ class DayaSMCMasterV63:
         
         try:
             ticker = yf.Ticker(self.yahoo_ticker)
-            df = ticker.history(period="3d", interval="15m")
+            # ⚡ 1-Minute Live Data Scalping Feed
+            df = ticker.history(period="1d", interval="1m")
             if df.empty or len(df) < 5: return
             
             ltp = df['Close'].iloc[-1]
             current_vol = df['Volume'].iloc[-1]
             
-            # 1. Before Day High / Day Low Markings
             prev_day_df = ticker.history(period="2d", interval="1d")
             if len(prev_day_df) < 2: return
             pdh = prev_day_df['High'].iloc[-2]
             pdl = prev_day_df['Low'].iloc[-2]
             
-            # 2. Institutional Order Flow (Anchor VWAP & Volume Profile POC)
             avg_volume = df['Volume'].mean()
             anchored_vwap = (df['Close'] * df['Volume']).sum() / df['Volume'].sum() if df['Volume'].sum() > 0 else df['Close'].mean()
             
-            # 3. Delta Volume & Fake Breakouts Identification
             if self.is_forex:
-                delta_volume_breakout = True  # Forex has decentralized volumes, bypassed to prevent lockups
+                delta_volume_breakout = True
             else:
                 delta_volume = current_vol / (avg_volume if avg_volume > 0 else 1)
-                delta_volume_breakout = delta_volume > 1.8
+                delta_volume_breakout = delta_volume > 1.3  # Quick alert volume threshold
 
-            # 4. Accumulation / Manipulation Boundary Filter
-            is_accumulation = df['High'].tail(4).max() - df['Low'].tail(4).min() < (ltp * 0.003)
+            # Optimized fast accumulation check
+            is_accumulation = df['High'].tail(3).max() - df['Low'].tail(3).min() < (ltp * 0.0015)
             
-            # 5. Core SMC Liquidity Grab Execution
+            # Liquidity sweep parameters targeting live price action
             liquidity_grab_buy = (df['Low'].iloc[-2] < pdl or ltp < pdl) and ltp > anchored_vwap
             liquidity_grab_sell = (df['High'].iloc[-2] > pdh or ltp > pdh) and ltp < anchored_vwap
             
@@ -132,8 +125,8 @@ class DayaSMCMasterV63:
                 self.state = 1
                 self.side = "BUY / CALL SIDE"
                 self.entry_price = ltp
-                self.target_price = ltp + (0.0050 if self.is_forex else 50.0)
-                self.stop_loss = ltp - (0.0020 if self.is_forex else 20.0)
+                self.target_price = ltp + (0.0025 if self.is_forex else 30.0)
+                self.stop_loss = ltp - (0.0012 if self.is_forex else 12.0)
                 self.entry_timestamp = time.time()
                 self.mbs_status = "[🟢 Structure Break Active]"
                 self.mrs_status = "[🔥 OrderFlow Injection]"
@@ -144,15 +137,14 @@ class DayaSMCMasterV63:
                 self.state = -1
                 self.side = "PUT SIDE / C.SEL"
                 self.entry_price = ltp
-                self.target_price = ltp - (0.0050 if self.is_forex else 50.0)
-                self.stop_loss = ltp + (0.0020 if self.is_forex else 20.0)
+                self.target_price = ltp - (0.0025 if self.is_forex else 30.0)
+                self.stop_loss = ltp + (0.0012 if self.is_forex else 12.0)
                 self.entry_timestamp = time.time()
                 self.mbs_status = "[🔴 Structure Break Active]"
                 self.mrs_status = "[💥 Manipulation Hunt]"
                 self.send_telegram_matrix(self.generate_live_box_string(ltp, 0, "RUNNING"), f"💥 *SMC LIQUIDITY GRAB PUT DETECTED ({self.symbol})* 💥", False)
                 return
 
-            # --- DYNAMIC RE-TRAIL / EXIT TRACKING LOOP ---
             if self.state != 0:
                 time_run_mins = int((time.time() - self.entry_timestamp) // 60)
                 current_diff = (ltp - self.entry_price) if self.state == 1 else (self.entry_price - ltp)
@@ -182,18 +174,18 @@ class DayaSMCMasterV63:
 if __name__ == "__main__":
     Thread(target=run_web_server, daemon=True).start()
     
-    # 📈 Target Watchlist Core Integration
     matrix_watch = [
-        DayaSMCMasterV63("RELIANCE", "RELIANCE.NS"),
-        DayaSMCMasterV63("SBIN", "SBIN.NS"),
-        DayaSMCMasterV63("TCS", "TCS.NS"),
-        DayaSMCMasterV63("INFY", "INFY.NS"),
-        DayaSMCMasterV63("EURUSD", "EURUSD=X"),
-        DayaSMCMasterV63("BTC-USD", "BTC-USD")
+        DayaSMCEngineV65("RELIANCE", "RELIANCE.NS"),
+        DayaSMCEngineV65("SBIN", "SBIN.NS"),
+        DayaSMCEngineV65("TCS", "TCS.NS"),
+        DayaSMCEngineV65("INFY", "INFY.NS"),
+        DayaSMCEngineV65("EURUSD", "EURUSD=X"),
+        DayaSMCEngineV65("BTC-USD", "BTC-USD")
     ]
     
-    print("Daya Master V63 Final System Online. Matrix Loop Initiated.")
+    print("Daya Master V65 Engine Online.")
     while True:
         for engine in matrix_watch:
             engine.execute_logic()
-        time.sleep(30)
+        time.sleep(15)
+        
