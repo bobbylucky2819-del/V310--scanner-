@@ -15,7 +15,7 @@ except ImportError:
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Daya SMC V67.1 Engine Active"
+def home(): return "Daya SMC V67.2 Engine Active"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -85,7 +85,7 @@ class DayaSMCEngineV67:
 
         # ⚡ [RULE 1]: 1D FRAME - PURE DAILY HIGH/LOW LIQUIDITY GRAB
         try:
-            time.sleep(1) # Rate Limit అవ్వకుండా చిన్న బ్రేక్
+            time.sleep(1)
             day_df = ticker.history(period="5d", interval="1d")
             if not day_df.empty and len(day_df) >= 2:
                 d_ltp = day_df['Close'].iloc[-1]
@@ -119,7 +119,7 @@ class DayaSMCEngineV67:
         
         for tf, (interval, lookback) in intraday_tfs.items():
             try:
-                time.sleep(1) # ప్రతీ టైమ్ ఫ్రేమ్ రిక్వెస్ట్ మధ్యలో 1 సెకను గ్యాప్ (Rate limit protection)
+                time.sleep(1)
                 df = ticker.history(period="7d", interval=interval)
                 if df.empty or len(df) < (lookback + 5): continue
                 
@@ -177,20 +177,19 @@ matrix_watch = [
 ]
 
 def start_trading_loop():
-    print("🚀 Daya Master V67.1 Ultimate Multi-TF Engine Online...")
+    print("🚀 Daya Master V67.2 Ultimate Multi-TF Engine Online...")
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "🤖 Daya SMC V67.1 Ultimate Engine Active & Rate-Limit Protected!"}, timeout=5)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "🤖 Daya SMC V67.2 Ultimate Engine Active & Rate-Limit Protected!"}, timeout=5)
     except: pass
 
     while True:
         for engine in matrix_watch:
             engine.execute_logic()
-            time.sleep(2) # ప్రతి సింబల్ స్కానింగ్ మధ్యలో 2 సెకన్ల గ్యాప్
-        time.sleep(300) # ప్రతి 5 నిమిషాలకు ఒకసారి మొత్తం లూప్ రన్ అవుతుంది
+            time.sleep(2)
+        time.sleep(300)
 
 Thread(target=start_trading_loop, daemon=True).start()
 
 if __name__ == "__main__":
     run_web_server()
-    
