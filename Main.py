@@ -15,7 +15,7 @@ except ImportError:
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Daya SMC V71.0 Ultimate Matrix Active"
+def home(): return "Daya SMC V71.1 Fixed Engine Active"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -26,16 +26,14 @@ TELEGRAM_BOT_TOKEN = "8736794778:AAHusM5e2JCHty4KDx6QKdZl26SeY65s5d4"
 TELEGRAM_CHAT_ID   = "-1004423772510"
 IST = pytz.timezone('Asia/Kolkata')
 
-class DayaSMCV71Engine:
+class DayaSMCV71Fixed:
     def __init__(self, symbol, yahoo_ticker, market_type):
         self.symbol = symbol
         self.yahoo_ticker = yahoo_ticker
         self.market_type = market_type
-        # Backend tracking variables for Daily High/Low
         self.daily_high = None
         self.daily_low = None
         self.last_daily_update = None
-        # Track triggers to catch every fresh hourly setup
         self.triggered_states = {"15m": "", "1h": "", "2h": "", "3h": "", "4h": ""}
 
     def check_market_timing(self):
@@ -47,7 +45,6 @@ class DayaSMCV71Engine:
         return 915 <= (now.hour * 100 + now.minute) <= 1530
 
     def update_daily_benchmarks(self, ticker):
-        """Runs purely in the background to cache historical daily filter metrics"""
         try:
             day_df = ticker.history(period="3d", interval="1d")
             if not day_df.empty and len(day_df) >= 2:
@@ -63,7 +60,7 @@ class DayaSMCV71Engine:
             f"│ 🟢 Running: {self.symbol:<7} [{tf:<3} TF]                 │\n"
             f"│ 📈 Direction       : {side:<24} │\n"
             f"├──────────────────────────────────────────────┤\n"
-            f"│  Daya SMC -> Ultimate Unlocked V71           │\n"
+            f"│  Daya SMC -> Ultimate Unlocked V71.1         │\n"
             f"├──────────────────────────────────────────────┤\n"
             f"│ 🪙 Start  — {entry:<{fmt}}  →  🛑 Stop loss — {sl:<{fmt}} │\n"
             f"│ 🎯 Target — {tp:<{fmt}}                           │\n"
@@ -81,7 +78,8 @@ class DayaSMCV71Engine:
         escaped_box = box_str.replace('.', '\\.').replace('-', '\\-').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('|', '\\|')
         formatted_text = f"{text_msg}\n\n```text\n{escaped_box}\n```"
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        try: requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": formatted_text, "parse_mode": "MarkdownV2"}, timeout=5)
+        try: 
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": formatted_text, "parse_mode": "MarkdownV2"}, timeout=5)
         except: pass
 
     def execute_logic(self):
@@ -92,7 +90,6 @@ class DayaSMCV71Engine:
         if self.daily_high is None or self.last_daily_update != today:
             self.update_daily_benchmarks(ticker)
 
-        # Precise independent tracking for hourly intervals to secure consistent target profits
         intraday_tfs = {"15m": ("15m", 15), "1h": ("1h", 24), "2h": ("1h", 48), "3h": ("1h", 72), "4h": ("1h", 96)}
         
         for tf, (interval, lookback) in intraday_tfs.items():
@@ -104,18 +101,15 @@ class DayaSMCV71Engine:
                 live_low = df['Low'].iloc[-1]
                 live_close = df['Close'].iloc[-1]
                 
-                # Independent Timeframe Swing Structure (Pure Price Action Chart Rules)
                 tf_high = df['High'].iloc[-lookback:-1].max()
                 tf_low = df['Low'].iloc[-lookback:-1].min()
 
-                # Core Signals: High/Low cross via Real-time Candle Wicks
                 sweep_buy = (live_low < tf_low) and (live_close > tf_low)
                 break_buy = (live_close > tf_high)
                 
                 sweep_sell = (live_high > tf_high) and (live_close < tf_high)
                 break_sell = (live_close < tf_low)
 
-                # --- BACKEND DAILY RUN OPTIONAL FILTER ---
                 extra_tag = ""
                 if self.daily_high and self.daily_low:
                     if live_low < self.daily_low or live_high > self.daily_high:
@@ -142,24 +136,24 @@ class DayaSMCV71Engine:
             except Exception as e:
                 print(f"Loop error for {tf} on {self.symbol}: {e}")
 
-# --- UNIVERSAL WATCHLIST ENGINES ---
+# --- ENGINES WATCHLIST ---
 indian_forex_watch = [
-    DayaSMCV71Engine("RELIANCE", "RELIANCE.NS", "IN"), DayaSMCV71Engine("TCS", "TCS.NS", "IN"),
-    DayaSMCV71Engine("HDFCBANK", "HDFCBANK.NS", "IN"), DayaSMCV71Engine("INFY", "INFY.NS", "IN"),
-    DayaSMCV71Engine("ICICIBANK", "ICICIBANK.NS", "IN"), DayaSMCV71Engine("BHARTIARTL", "BHARTIARTL.NS", "IN"),
-    DayaSMCV71Engine("SBIN", "SBIN.NS", "IN"), DayaSMCV71Engine("LICI", "LICI.NS", "IN"),
-    DayaSMCV71Engine("ITC", "ITC.NS", "IN"), DayaSMCV71Engine("LT", "LT.NS", "IN"),
-    DayaSMCV71Engine("HINDUNILVR", "HINDUNILVR.NS", "IN"), DayaSMCV71Engine("HCLTECH", "HCLTECH.NS", "IN"),
-    DayaSMCV71Engine("BAJFINANCE", "BAJFINANCE.NS", "IN"), DayaSMCV71Engine("SUNPHARMA", "SUNPHARMA.NS", "IN"),
-    DayaSMCV71Engine("MARUTI", "MARUTI.NS", "IN"), DayaSMCV71Engine("TATASTEEL", "TATASTEEL.NS", "IN"),
-    DayaSMCV71Engine("KOTAKBANK", "KOTAKBANK.NS", "IN"), DayaSMCV71Engine("AXISBANK", "AXISBANK.NS", "IN"),
-    DayaSMCV71Engine("TITAN", "TITAN.NS", "IN"), DayaSMCV71Engine("NTPC", "NTPC.NS", "IN"),
-    DayaSMCV71Engine("ONGC", "ONGC.NS", "IN"), DayaSMCV71Engine("ADANIENT", "ADANIENT.NS", "IN"),
-    DayaSMCV71Engine("ASIANPAINT", "ASIANPAINT.NS", "IN"), DayaSMCV71Engine("M&M", "M.NS", "IN"),
-    DayaSMCV71Engine("POWERGRID", "POWERGRID.NS", "IN"), DayaSMCV71Engine("EURUSD", "EURUSD=X", "FOREX")
+    DayaSMCV71Fixed("RELIANCE", "RELIANCE.NS", "IN"), DayaSMCV71Fixed("TCS", "TCS.NS", "IN"),
+    DayaSMCV71Fixed("HDFCBANK", "HDFCBANK.NS", "IN"), DayaSMCV71Fixed("INFY", "INFY.NS", "IN"),
+    DayaSMCV71Fixed("ICICIBANK", "ICICIBANK.NS", "IN"), DayaSMCV71Fixed("BHARTIARTL", "BHARTIARTL.NS", "IN"),
+    DayaSMCV71Fixed("SBIN", "SBIN.NS", "IN"), DayaSMCV71Fixed("LICI", "LICI.NS", "IN"),
+    DayaSMCV71Fixed("ITC", "ITC.NS", "IN"), DayaSMCV71Fixed("LT", "LT.NS", "IN"),
+    DayaSMCV71Fixed("HINDUNILVR", "HINDUNILVR.NS", "IN"), DayaSMCV71Fixed("HCLTECH", "HCLTECH.NS", "IN"),
+    DayaSMCV71Fixed("BAJFINANCE", "BAJFINANCE.NS", "IN"), DayaSMCV71Fixed("SUNPHARMA", "SUNPHARMA.NS", "IN"),
+    DayaSMCV71Fixed("MARUTI", "MARUTI.NS", "IN"), DayaSMCV71Fixed("TATASTEEL", "TATASTEEL.NS", "IN"),
+    DayaSMCV71Fixed("KOTAKBANK", "KOTAKBANK.NS", "IN"), DayaSMCV71Fixed("AXISBANK", "AXISBANK.NS", "IN"),
+    DayaSMCV71Fixed("TITAN", "TITAN.NS", "IN"), DayaSMCV71Fixed("NTPC", "NTPC.NS", "IN"),
+    DayaSMCV71Fixed("ONGC", "ONGC.NS", "IN"), DayaSMCV71Fixed("ADANIENT", "ADANIENT.NS", "IN"),
+    DayaSMCV71Fixed("ASIANPAINT", "ASIANPAINT.NS", "IN"), DayaSMCV71Fixed("M&M", "M.NS", "IN"),
+    DayaSMCV71Fixed("POWERGRID", "POWERGRID.NS", "IN"), DayaSMCV71Fixed("EURUSD", "EURUSD=X", "FOREX")
 ]
 
-crypto_watch = [DayaSMCV71Engine("BTC-USDT", "BTC-USD", "CRYPTO")]
+crypto_watch = [DayaSMCV71Fixed("BTC-USDT", "BTC-USD", "CRYPTO")]
 
 def start_indian_forex_loop():
     while True:
@@ -169,16 +163,15 @@ def start_indian_forex_loop():
 def start_crypto_loop():
     while True:
         for engine in crypto_watch: engine.execute_logic()
-        time.sleep(3) # Super fast 3-second cycle response
+        time.sleep(3)
 
 Thread(target=start_indian_forex_loop, daemon=True).start()
 Thread(target=start_crypto_loop, daemon=True).start()
 
 try:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "🤖 Daya SMC V71.0 Ultimate Unlocked Engine Active!"}, timeout=5)
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "🤖 Daya SMC V71.1 Fixed Engine Fully Active!"}, timeout=5)
 except: pass
 
 if __name__ == "__main__":
     run_web_server()
-    
