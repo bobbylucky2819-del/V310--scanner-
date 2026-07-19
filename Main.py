@@ -15,7 +15,7 @@ except ImportError:
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Daya SMC V71.1 Fixed Engine Active"
+def home(): return "Daya SMC V77.0 Ultimate All-Crypto Matrix Active"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -26,7 +26,7 @@ TELEGRAM_BOT_TOKEN = "8736794778:AAHusM5e2JCHty4KDx6QKdZl26SeY65s5d4"
 TELEGRAM_CHAT_ID   = "-1004423772510"
 IST = pytz.timezone('Asia/Kolkata')
 
-class DayaSMCV71Fixed:
+class DayaSMCV77UltimateEngine:
     def __init__(self, symbol, yahoo_ticker, market_type):
         self.symbol = symbol
         self.yahoo_ticker = yahoo_ticker
@@ -34,7 +34,8 @@ class DayaSMCV71Fixed:
         self.daily_high = None
         self.daily_low = None
         self.last_daily_update = None
-        self.triggered_states = {"15m": "", "1h": "", "2h": "", "3h": "", "4h": ""}
+        self.last_trigger_time = {"15m": None, "1h": None, "2h": None, "3h": None, "4h": None}
+        self.last_trigger_side = {"15m": "", "1h": "", "2h": "", "3h": "", "4h": ""}
 
     def check_market_timing(self):
         if self.market_type == 'CRYPTO': return True
@@ -60,7 +61,7 @@ class DayaSMCV71Fixed:
             f"│ 🟢 Running: {self.symbol:<7} [{tf:<3} TF]                 │\n"
             f"│ 📈 Direction       : {side:<24} │\n"
             f"├──────────────────────────────────────────────┤\n"
-            f"│  Daya SMC -> Ultimate Unlocked V71.1         │\n"
+            f"│  Daya SMC -> Ultimate All-Crypto V77.0      │\n"
             f"├──────────────────────────────────────────────┤\n"
             f"│ 🪙 Start  — {entry:<{fmt}}  →  🛑 Stop loss — {sl:<{fmt}} │\n"
             f"│ 🎯 Target — {tp:<{fmt}}                           │\n"
@@ -78,100 +79,129 @@ class DayaSMCV71Fixed:
         escaped_box = box_str.replace('.', '\\.').replace('-', '\\-').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('|', '\\|')
         formatted_text = f"{text_msg}\n\n```text\n{escaped_box}\n```"
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        try: 
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": formatted_text, "parse_mode": "MarkdownV2"}, timeout=5)
+        try: requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": formatted_text, "parse_mode": "MarkdownV2"}, timeout=5)
         except: pass
 
     def execute_logic(self):
         if not self.check_market_timing(): return
+        now_time = datetime.datetime.now(IST)
+        
+        intraday_tfs = {"15m": 15, "1h": 60, "2h": 120, "3h": 180, "4h": 240}
         ticker = yf.Ticker(self.yahoo_ticker)
         
         today = datetime.datetime.now(IST).date()
-        if self.daily_high is None or self.last_daily_update != today:
+        if (self.daily_high is None or self.last_daily_update != today) and self.market_type == 'CRYPTO':
             self.update_daily_benchmarks(ticker)
 
-        intraday_tfs = {"15m": ("15m", 15), "1h": ("1h", 24), "2h": ("1h", 48), "3h": ("1h", 72), "4h": ("1h", 96)}
-        
-        for tf, (interval, lookback) in intraday_tfs.items():
+        for tf, minutes in intraday_tfs.items():
             try:
-                df = ticker.history(period="2d" if tf == "15m" else "5d", interval=interval)
-                if df.empty or len(df) < (lookback + 2): continue
+                # 30-Seconds Pre-Close Filter Logic
+                current_minute_offset = now_time.minute % minutes if minutes < 60 else (now_time.hour * 60 + now_time.minute) % minutes
+                current_second = now_time.second
+                is_30s_window = (current_minute_offset == (minutes - 1)) and (current_second >= 30)
                 
+                interval_str = "15m" if tf == "15m" else "1h"
+                df = ticker.history(period="3d" if tf == "15m" else "7d", interval=interval_str)
+                if df.empty or len(df) < 7: continue
+
+                multiplier = 1 if tf in ["15m", "1h"] else (2 if tf == "2h" else (3 if tf == "3h" else 4))
+                
+                live_close = df['Close'].iloc[-1]
                 live_high = df['High'].iloc[-1]
                 live_low = df['Low'].iloc[-1]
-                live_close = df['Close'].iloc[-1]
                 
-                tf_high = df['High'].iloc[-lookback:-1].max()
-                tf_low = df['Low'].iloc[-lookback:-1].min()
+                # Lookback 5 blocks for structural evaluation
+                structure_high = df['High'].iloc[-5 - multiplier:-1].max()
+                structure_low = df['Low'].iloc[-5 - multiplier:-1].min()
 
-                sweep_buy = (live_low < tf_low) and (live_close > tf_low)
-                break_buy = (live_close > tf_high)
-                
-                sweep_sell = (live_high > tf_high) and (live_close < tf_high)
-                break_sell = (live_close < tf_low)
+                # Low-Momentum Choppy Filter
+                candle_range = abs(live_high - live_low)
+                avg_range = (df['High'] - df['Low']).tail(10).mean()
+                if candle_range < (avg_range * 0.38): continue
 
+                # Continuous Structural Break Triggers
+                c_buy_momentum = (live_close > structure_high)
+                p_buy_momentum = (live_close < structure_low)
+
+                # Daily High/Low Break Tag [MATRIX EXTRA]
                 extra_tag = ""
                 if self.daily_high and self.daily_low:
                     if live_low < self.daily_low or live_high > self.daily_high:
                         extra_tag = " [🔥 MATRIX EXTRA]"
 
-                if (sweep_buy or break_buy) and self.triggered_states[tf] != "BUY":
-                    self.triggered_states[tf] = "BUY"
-                    target = live_close * 1.012 if self.market_type != 'FOREX' else live_close + 0.0030
-                    sl = live_close * 0.995 if self.market_type != 'FOREX' else live_close - 0.0012
-                    label = f"GRAB BUY [🟢 +]{extra_tag}" if sweep_buy else f"MOMENTUM C.BUY [🟢]{extra_tag}"
-                    
-                    box = self.generate_live_box_string(tf, label, live_close, sl, target, live_close, "[🟢 Setup Active]", "[🔥 Momentum Shift]", "RUNNING")
-                    self.send_telegram_matrix(box, f"🚀 *Daya SMC: {tf} {label} ({self.symbol})* 🚀")
+                current_candle_time = df.index[-1]
 
-                elif (sweep_sell or break_sell) and self.triggered_states[tf] != "SELL":
-                    self.triggered_states[tf] = "SELL"
-                    target = live_close * 0.988 if self.market_type != 'FOREX' else live_close - 0.0030
-                    sl = live_close * 1.005 if self.market_type != 'FOREX' else live_close + 0.0012
-                    label = f"GRAB PUT [🔴 +]{extra_tag}" if sweep_sell else f"MOMENTUM P.BUY [🔴]{extra_tag}"
-                    
-                    box = self.generate_live_box_string(tf, label, live_close, sl, target, live_close, "[🔴 Setup Active]", "[💥 Orderflow Dump]", "RUNNING")
-                    self.send_telegram_matrix(box, f"💥 *Daya SMC: {tf} {label} ({self.symbol})* 💥")
-                    
+                if c_buy_momentum:
+                    if self.last_trigger_time[tf] != current_candle_time or self.last_trigger_side[tf] != "BUY":
+                        self.last_trigger_time[tf] = current_candle_time
+                        self.last_trigger_side[tf] = "BUY"
+                        
+                        mbs_status = "[🟢 30s Orderflow Lock]" if is_30s_window else "[🟢 Structure Break High]"
+                        mrs_status = "[🔥 Advance Volume Grabbed]" if is_30s_window else "[🔥 Continuous Call Ride]"
+                        
+                        target = live_close * 1.018 if self.market_type == 'CRYPTO' else (live_close * 1.012 if self.market_type == 'IN' else live_close + 0.0035)
+                        sl = live_close * 0.992 if self.market_type == 'CRYPTO' else (live_close * 0.994 if self.market_type == 'IN' else live_close - 0.0014)
+                        label = f"C.BUY (CALL) [🟢]{extra_tag}"
+                        
+                        box = self.generate_live_box_string(tf, label, live_close, sl, target, live_close, mbs_status, mrs_status, "RUNNING")
+                        self.send_telegram_matrix(box, f"🚀 *Daya Master: {tf} {label} ({self.symbol})* 🚀")
+
+                elif p_buy_momentum:
+                    if self.last_trigger_time[tf] != current_candle_time or self.last_trigger_side[tf] != "SELL":
+                        self.last_trigger_time[tf] = current_candle_time
+                        self.last_trigger_side[tf] = "SELL"
+                        
+                        mbs_status = "[🔴 30s Orderflow Lock]" if is_30s_window else "[🔴 Structure Break Low]"
+                        mrs_status = "[💥 Advance Volume Grabbed]" if is_30s_window else "[💥 Continuous Put Ride]"
+                        
+                        target = live_close * 0.982 if self.market_type == 'CRYPTO' else (live_close * 0.988 if self.market_type == 'IN' else live_close - 0.0035)
+                        sl = live_close * 1.008 if self.market_type == 'CRYPTO' else (live_close * 1.006 if self.market_type == 'IN' else live_close + 0.0014)
+                        label = f"P.BUY (PUT) [🔴]{extra_tag}"
+                        
+                        box = self.generate_live_box_string(tf, label, live_close, sl, target, live_close, mbs_status, mrs_status, "RUNNING")
+                        self.send_telegram_matrix(box, f"💥 *Daya Master: {tf} {label} ({self.symbol})* 💥")
+                        
             except Exception as e:
-                print(f"Loop error for {tf} on {self.symbol}: {e}")
+                print(f"Matrix loop fault on {tf} {self.symbol}: {e}")
 
-# --- ENGINES WATCHLIST ---
-indian_forex_watch = [
-    DayaSMCV71Fixed("RELIANCE", "RELIANCE.NS", "IN"), DayaSMCV71Fixed("TCS", "TCS.NS", "IN"),
-    DayaSMCV71Fixed("HDFCBANK", "HDFCBANK.NS", "IN"), DayaSMCV71Fixed("INFY", "INFY.NS", "IN"),
-    DayaSMCV71Fixed("ICICIBANK", "ICICIBANK.NS", "IN"), DayaSMCV71Fixed("BHARTIARTL", "BHARTIARTL.NS", "IN"),
-    DayaSMCV71Fixed("SBIN", "SBIN.NS", "IN"), DayaSMCV71Fixed("LICI", "LICI.NS", "IN"),
-    DayaSMCV71Fixed("ITC", "ITC.NS", "IN"), DayaSMCV71Fixed("LT", "LT.NS", "IN"),
-    DayaSMCV71Fixed("HINDUNILVR", "HINDUNILVR.NS", "IN"), DayaSMCV71Fixed("HCLTECH", "HCLTECH.NS", "IN"),
-    DayaSMCV71Fixed("BAJFINANCE", "BAJFINANCE.NS", "IN"), DayaSMCV71Fixed("SUNPHARMA", "SUNPHARMA.NS", "IN"),
-    DayaSMCV71Fixed("MARUTI", "MARUTI.NS", "IN"), DayaSMCV71Fixed("TATASTEEL", "TATASTEEL.NS", "IN"),
-    DayaSMCV71Fixed("KOTAKBANK", "KOTAKBANK.NS", "IN"), DayaSMCV71Fixed("AXISBANK", "AXISBANK.NS", "IN"),
-    DayaSMCV71Fixed("TITAN", "TITAN.NS", "IN"), DayaSMCV71Fixed("NTPC", "NTPC.NS", "IN"),
-    DayaSMCV71Fixed("ONGC", "ONGC.NS", "IN"), DayaSMCV71Fixed("ADANIENT", "ADANIENT.NS", "IN"),
-    DayaSMCV71Fixed("ASIANPAINT", "ASIANPAINT.NS", "IN"), DayaSMCV71Fixed("M&M", "M.NS", "IN"),
-    DayaSMCV71Fixed("POWERGRID", "POWERGRID.NS", "IN"), DayaSMCV71Fixed("EURUSD", "EURUSD=X", "FOREX")
+# --- EXPANDED ALL-CRYPTO WATCHLIST ---
+crypto_watch = [
+    DayaSMCV77UltimateEngine("BTC-USDT", "BTC-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("ETH-USDT", "ETH-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("SOL-USDT", "SOL-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("XRP-USDT", "XRP-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("BNB-USDT", "BNB-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("ADA-USDT", "ADA-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("DOT-USDT", "DOT-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("DOGE-USDT", "DOGE-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("MATIC-USDT", "MATIC-USD", "CRYPTO"),
+    DayaSMCV77UltimateEngine("LTC-USDT", "LTC-USD", "CRYPTO")
 ]
 
-crypto_watch = [DayaSMCV71Fixed("BTC-USDT", "BTC-USD", "CRYPTO")]
+indian_forex_watch = [
+    DayaSMCV77UltimateEngine("RELIANCE", "RELIANCE.NS", "IN"), DayaSMCV77UltimateEngine("TCS", "TCS.NS", "IN"),
+    DayaSMCV77UltimateEngine("HDFCBANK", "HDFCBANK.NS", "IN"), DayaSMCV77UltimateEngine("INFY", "INFY.NS", "IN"),
+    DayaSMCV77UltimateEngine("ICICIBANK", "ICICIBANK.NS", "IN"), DayaSMCV77UltimateEngine("EURUSD", "EURUSD=X", "FOREX")
+]
 
 def start_indian_forex_loop():
     while True:
         for engine in indian_forex_watch: engine.execute_logic()
-        time.sleep(3)
+        time.sleep(4)
 
 def start_crypto_loop():
     while True:
         for engine in crypto_watch: engine.execute_logic()
-        time.sleep(3)
+        time.sleep(4)
 
 Thread(target=start_indian_forex_loop, daemon=True).start()
 Thread(target=start_crypto_loop, daemon=True).start()
 
 try:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "🤖 Daya SMC V71.1 Fixed Engine Fully Active!"}, timeout=5)
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "🤖 Daya SMC Ultimate Engine V77.0 All-Crypto Matrix Locked & Active!"}, timeout=5)
 except: pass
 
 if __name__ == "__main__":
     run_web_server()
+        
