@@ -3,3 +3,9 @@ numpy
 requests
 flask
 yfinance
+smartapi-python
+pytz
+requests
+websocket-client
+pyotp
+flask
