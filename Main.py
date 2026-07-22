@@ -15,14 +15,14 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Daya Master V87.0 SmartAPI & Binance WebSocket Engine Live!"
+    return "Daya Master Safe Signal Engine Live!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
 # ==========================================
-# CONFIGURATIONS (ENVIRONMENT VARIABLES)
+# CONFIGURATIONS
 # ==========================================
 API_KEY     = os.environ.get("API_KEY", "5L3fPSxW")
 CLIENT_ID   = os.environ.get("CLIENT_ID", "")
@@ -35,7 +35,8 @@ TELEGRAM_CHAT_ID   = os.environ.get("CHAT_ID", "-1004423772510")
 IST = pytz.timezone('Asia/Kolkata')
 
 def send_telegram(box_str, text_msg):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: 
+        return
     escaped_box = (box_str.replace('.', '\\.').replace('-', '\\-')
                    .replace('[', '\\[').replace(']', '\\]')
                    .replace('(', '\\(').replace(')', '\\)').replace('|', '\\|'))
@@ -43,8 +44,8 @@ def send_telegram(box_str, text_msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": formatted_text, "parse_mode": "MarkdownV2"}, timeout=5)
-    except:
-        pass
+    except Exception as e:
+        print("Telegram Send Error:", e)
 
 def generate_box(market_title, version, name, tf, side, entry, sl, tp, ltp, mbs, mrs, final_str):
     return (
@@ -66,7 +67,7 @@ def generate_box(market_title, version, name, tf, side, entry, sl, tp, ltp, mbs,
     )
 
 # ==========================================
-# 1. ANGEL ONE SMARTAPI WEBSOCKET ENGINE (NSE)
+# 1. ANGEL ONE ENGINE (NSE ALERTS)
 # ==========================================
 class AngelSmartEngine:
     def __init__(self):
@@ -74,7 +75,10 @@ class AngelSmartEngine:
         self.feed_token = None
         self.jwt_token = None
         self.sws = None
-        self.levels = {}
+        self.levels = {
+            "2885": {"name": "RELIANCE", "last_price": 0, "last_time": 0},
+            "3045": {"name": "SBIN",     "last_price": 0, "last_time": 0}
+        }
 
     def login(self):
         totp = pyotp.TOTP(TOTP_SECRET).now()
@@ -89,45 +93,56 @@ class AngelSmartEngine:
         try:
             token = message.get('token')
             ltp = float(message.get('last_traded_price', 0)) / 100.0
-            if token in self.levels:
-                p_high = self.levels[token]['p_high']
-                p_low  = self.levels[token]['p_low']
-                name   = self.levels[token]['name']
+            
+            if token in self.levels and ltp > 0:
+                now = time.time()
+                last_p = self.levels[token]['last_price']
+                last_t = self.levels[token]['last_time']
+                name = self.levels[token]['name']
 
-                if ltp > p_high and not self.levels[token]['buy_triggered']:
-                    self.levels[token]['buy_triggered'] = True
-                    sl, tp = ltp * 0.995, ltp * 1.010
-                    box = generate_box("NSE LIVE", "SmartAPI V87.0", name, "15m", "C.BUY (CALL) [🟢]", ltp, sl, tp, ltp, "[🟢 High Breakout]", "[🔥 Tick-by-Tick Feed]", "RUNNING")
-                    send_telegram(box, f"🚀 *NSE SmartAPI Buy Signal: {name}* 🚀")
+                if last_p == 0:
+                    self.levels[token]['last_price'] = ltp
+                    self.levels[token]['last_time'] = now
+                    return
 
-                elif ltp < p_low and not self.levels[token]['sell_triggered']:
-                    self.levels[token]['sell_triggered'] = True
-                    sl, tp = ltp * 1.005, ltp * 0.990
-                    box = generate_box("NSE LIVE", "SmartAPI V87.0", name, "15m", "P.BUY (PUT) [🔴]", ltp, sl, tp, ltp, "[🔴 Low Breakdown]", "[💥 Tick-by-Tick Feed]", "RUNNING")
-                    send_telegram(box, f"💥 *NSE SmartAPI Sell Signal: {name}* 💥")
-        except Exception:
-            pass
+                change_pct = abs((ltp - last_p) / last_p) * 100
+
+                # 30 సెకన్ల గ్యాప్ లేదా 0.05% ప్రైస్ మూవ్‌మెంట్ వస్తేనే అలర్ట్ (Telegram Block అవ్వకుండా)
+                if change_pct >= 0.05 or (now - last_t >= 30):
+                    self.levels[token]['last_price'] = ltp
+                    self.levels[token]['last_time'] = now
+
+                    if ltp >= last_p:
+                        sl, tp = ltp * 0.995, ltp * 1.010
+                        box = generate_box("NSE LIVE", "Daya Master V87", name, "1m", "C.BUY (CALL) [🟢]", ltp, sl, tp, ltp, "[🟢 Live Price Movement]", "[⚡ Exchange Feed]", "RUNNING")
+                        send_telegram(box, f"🚀 *NSE Live Signal: {name}* 🚀")
+                    else:
+                        sl, tp = ltp * 1.005, ltp * 0.990
+                        box = generate_box("NSE LIVE", "Daya Master V87", name, "1m", "P.BUY (PUT) [🔴]", ltp, sl, tp, ltp, "[🔴 Live Price Drop]", "[⚡ Exchange Feed]", "RUNNING")
+                        send_telegram(box, f"💥 *NSE Live Signal: {name}* 💥")
+        except Exception as e:
+            print("NSE Error:", e)
+
+    def on_open(self, wsapp):
+        # Proper SmartAPI Subscription Token format
+        token_list = [{"exchangeType": 1, "tokens": ["2885", "3045"]}]
+        self.sws.subscribe("correl_id_1", 1, token_list)
 
     def start(self):
         if not self.login():
             return
-
-        self.levels = {
-            "2885": {"name": "RELIANCE", "p_high": 3000.0, "p_low": 2950.0, "buy_triggered": False, "sell_triggered": False},
-            "3045": {"name": "SBIN",     "p_high": 850.0,  "p_low": 830.0,  "buy_triggered": False, "sell_triggered": False}
-        }
-
         self.sws = SmartWebSocketV2(self.jwt_token, API_KEY, CLIENT_ID, self.feed_token)
         self.sws.on_data = self.on_data
+        self.sws.on_open = self.on_open
         self.sws.connect()
 
 # ==========================================
-# 2. BINANCE WEBSOCKET ENGINE (CRYPTO)
+# 2. BINANCE ENGINE (CRYPTO ALERTS)
 # ==========================================
 class BinanceWebSocketEngine:
     def __init__(self, symbols):
         self.symbols = symbols
-        self.levels = {s: {"p_high": 0, "p_low": 0, "buy_triggered": False, "sell_triggered": False} for s in symbols}
+        self.levels = {s: {"last_price": 0, "last_time": 0} for s in symbols}
 
     def on_message(self, ws, message):
         try:
@@ -135,23 +150,33 @@ class BinanceWebSocketEngine:
             symbol = data['s']
             ltp = float(data['c'])
 
-            if symbol in self.levels:
-                p_high = self.levels[symbol]['p_high']
-                p_low  = self.levels[symbol]['p_low']
+            if symbol in self.levels and ltp > 0:
+                now = time.time()
+                last_p = self.levels[symbol]['last_price']
+                last_t = self.levels[symbol]['last_time']
 
-                if p_high > 0 and ltp > p_high and not self.levels[symbol]['buy_triggered']:
-                    self.levels[symbol]['buy_triggered'] = True
-                    sl, tp = ltp * 0.994, ltp * 1.012
-                    box = generate_box("BINANCE", "Crypto Socket V87.0", symbol, "15m", "C.BUY (CALL) [🟢]", ltp, sl, tp, ltp, "[🟢 Instant High Break]", "[⚡ Direct WebSocket]", "RUNNING")
-                    send_telegram(box, f"🚀 *Binance Socket Signal: {symbol}* 🚀")
+                if last_p == 0:
+                    self.levels[symbol]['last_price'] = ltp
+                    self.levels[symbol]['last_time'] = now
+                    return
 
-                elif p_low > 0 and ltp < p_low and not self.levels[symbol]['sell_triggered']:
-                    self.levels[symbol]['sell_triggered'] = True
-                    sl, tp = ltp * 1.006, ltp * 0.988
-                    box = generate_box("BINANCE", "Crypto Socket V87.0", symbol, "15m", "P.BUY (PUT) [🔴]", ltp, sl, tp, ltp, "[🔴 Instant Low Break]", "[⚡ Direct WebSocket]", "RUNNING")
-                    send_telegram(box, f"💥 *Binance Socket Signal: {symbol}* 💥")
-        except Exception:
-            pass
+                change_pct = abs((ltp - last_p) / last_p) * 100
+
+                # 20 సెకన్ల గ్యాప్ లేదా 0.05% మూవ్‌మెంట్ ఉంటేనే అలర్ట్
+                if change_pct >= 0.05 or (now - last_t >= 20):
+                    self.levels[symbol]['last_price'] = ltp
+                    self.levels[symbol]['last_time'] = now
+
+                    if ltp >= last_p:
+                        sl, tp = ltp * 0.994, ltp * 1.012
+                        box = generate_box("BINANCE", "Crypto Live V87", symbol, "1m", "C.BUY (CALL) [🟢]", ltp, sl, tp, ltp, "[🟢 Live Price Move]", "[⚡ Direct WebSocket]", "RUNNING")
+                        send_telegram(box, f"🚀 *Binance Signal: {symbol}* 🚀")
+                    else:
+                        sl, tp = ltp * 1.006, ltp * 0.988
+                        box = generate_box("BINANCE", "Crypto Live V87", symbol, "1m", "P.BUY (PUT) [🔴]", ltp, sl, tp, ltp, "[🔴 Live Price Drop]", "[⚡ Direct WebSocket]", "RUNNING")
+                        send_telegram(box, f"💥 *Binance Signal: {symbol}* 💥")
+        except Exception as e:
+            print("Binance Error:", e)
 
     def start(self):
         streams = "/".join([f"{s.lower()}@ticker" for s in self.symbols])
@@ -176,7 +201,7 @@ Thread(target=start_angel, daemon=True).start()
 
 try:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "⚡ Daya Master V87.0 SmartAPI & Binance WebSocket Live!"}, timeout=5)
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "⚡ Daya Master Engine V87.0 Live & Fixed!"}, timeout=5)
 except Exception:
     pass
 
