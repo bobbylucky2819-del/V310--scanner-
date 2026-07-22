@@ -163,7 +163,7 @@ class BinanceWebSocketEngine:
                 change_pct = abs((ltp - last_p) / last_p) * 100
 
                 # 20 సెకన్ల గ్యాప్ లేదా 0.05% మూవ్‌మెంట్ ఉంటేనే అలర్ట్
-                if change_pct >= 0.05 or (now - last_t >= 20):
+                if change_pct >= 0.01 or (now - last_t >= 10):
                     self.levels[symbol]['last_price'] = ltp
                     self.levels[symbol]['last_time'] = now
 
