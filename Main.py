@@ -15,7 +15,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Daya Master Safe Signal Engine Live!"
+    return "Daya Master Active Engine Live!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -43,7 +43,16 @@ def send_telegram(box_str, text_msg):
     formatted_text = f"{text_msg}\n\n```text\n{escaped_box}\n```"
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": formatted_text, "parse_mode": "MarkdownV2"}, timeout=5)
+        response = requests.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": formatted_text,
+                "parse_mode": "MarkdownV2"
+            },
+            timeout=5
+        )
+        print(response.status_code, response.text)
     except Exception as e:
         print("Telegram Send Error:", e)
 
@@ -83,6 +92,7 @@ class AngelSmartEngine:
     def login(self):
         totp = pyotp.TOTP(TOTP_SECRET).now()
         data = self.smart_api.generateSession(CLIENT_ID, PWD, totp)
+        print("Login Response:", data)
         if data and data.get('status'):
             self.jwt_token = data['data']['jwtToken']
             self.feed_token = self.smart_api.getfeedToken()
@@ -90,6 +100,7 @@ class AngelSmartEngine:
         return False
 
     def on_data(self, wsapp, message):
+        print(message)
         try:
             token = message.get('token')
             ltp = float(message.get('last_traded_price', 0)) / 100.0
@@ -107,8 +118,7 @@ class AngelSmartEngine:
 
                 change_pct = abs((ltp - last_p) / last_p) * 100
 
-                # 30 సెకన్ల గ్యాప్ లేదా 0.05% ప్రైస్ మూవ్‌మెంట్ వస్తేనే అలర్ట్ (Telegram Block అవ్వకుండా)
-                if change_pct >= 0.05 or (now - last_t >= 30):
+                if change_pct >= 0.05 or (now - last_t >= 20):
                     self.levels[token]['last_price'] = ltp
                     self.levels[token]['last_time'] = now
 
@@ -124,7 +134,7 @@ class AngelSmartEngine:
             print("NSE Error:", e)
 
     def on_open(self, wsapp):
-        # Proper SmartAPI Subscription Token format
+        print("Angel WebSocket Connected")
         token_list = [{"exchangeType": 1, "tokens": ["2885", "3045"]}]
         self.sws.subscribe("correl_id_1", 1, token_list)
 
@@ -147,6 +157,9 @@ class BinanceWebSocketEngine:
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
+            if "data" in data:
+                data = data["data"]
+
             symbol = data['s']
             ltp = float(data['c'])
 
@@ -162,8 +175,7 @@ class BinanceWebSocketEngine:
 
                 change_pct = abs((ltp - last_p) / last_p) * 100
 
-                # 20 సెకన్ల గ్యాప్ లేదా 0.05% మూవ్‌మెంట్ ఉంటేనే అలర్ట్
-                if change_pct >= 0.01 or (now - last_t >= 10):
+                if change_pct >= 0.05 or (now - last_t >= 20):
                     self.levels[symbol]['last_price'] = ltp
                     self.levels[symbol]['last_time'] = now
 
@@ -180,9 +192,14 @@ class BinanceWebSocketEngine:
 
     def start(self):
         streams = "/".join([f"{s.lower()}@ticker" for s in self.symbols])
-        url = f"wss://stream.binance.com:9443/ws/{streams}"
+        url = f"wss://stream.binance.com:9443/stream?streams={streams}"
         ws = websocket.WebSocketApp(url, on_message=self.on_message)
-        ws.run_forever()
+        while True:
+            try:
+                ws.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as e:
+                print(e)
+                time.sleep(5)
 
 # ==========================================
 # THREAD INITIALIZATION
@@ -201,7 +218,7 @@ Thread(target=start_angel, daemon=True).start()
 
 try:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "⚡ Daya Master Engine V87.0 Live & Fixed!"}, timeout=5)
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "⚡ Daya Master Fast Signal Engine V87.0 Live!"}, timeout=5)
 except Exception:
     pass
 
