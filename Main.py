@@ -1,5 +1,6 @@
 import os
 import requests
+from datetime import datetime, timedelta
 from flask import Flask, jsonify
 from SmartApi import SmartConnect
 import pyotp
@@ -7,7 +8,7 @@ import pyotp
 app = Flask(__name__)
 
 # ==========================================
-# ANGEL ONE CREDENTIALS
+# ANGEL ONE CREDENTIALS (YOUR OLD CONFIG)
 # ==========================================
 API_KEY      = os.getenv("API_KEY", "5L3fPSxW")
 CLIENT_CODE  = os.getenv("CLIENT_CODE", "AAAE383027")
@@ -52,13 +53,18 @@ def scan_market():
 
         signals_found = []
 
+        # Continuous auto-updating live dates fix
+        now = datetime.now()
+        from_d = (now - timedelta(days=5)).strftime("%Y-%m-%d 09:15")
+        to_d = now.strftime("%Y-%m-%d %H:%M")
+
         for item in symbols:
             params = {
                 "exchange": "NSE",
                 "symboltoken": item["token"],
                 "interval": "ONE_HOUR",
-                "fromdate": "2026-07-20 09:15",
-                "todate": "2026-07-26 15:30"
+                "fromdate": from_d,
+                "todate": to_d
             }
             res = smart_api.getCandleData(params)
             if res and 'data' in res and len(res['data']) >= 2:
