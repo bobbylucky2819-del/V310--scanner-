@@ -1,7 +1,6 @@
 import os
 import requests
 import pytz
-import pandas as pd
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 from SmartApi import SmartConnect
@@ -9,9 +8,7 @@ import pyotp
 
 app = Flask(__name__)
 
-# ==========================================
-# CREDENTIALS
-# ==========================================
+# Credentials
 API_KEY      = os.getenv("API_KEY", "5L3fPSxW")
 CLIENT_CODE  = os.getenv("CLIENT_CODE", "AAAE383027")
 PASSWORD     = os.getenv("PASSWORD", "2222")
@@ -25,7 +22,7 @@ last_sent_signals = {}
 def is_indian_market_open():
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
-    if now.weekday() >= 5: # Sat/Sun Skip
+    if now.weekday() >= 5:
         return False
     market_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
     market_end   = now.replace(hour=15, minute=30, second=0, microsecond=0)
@@ -51,16 +48,20 @@ def send_telegram_alert(market_category, signal_action, exit_action, sweep_type,
     except Exception as e:
         print(f"Telegram alert error: {e}")
 
-# Helper function to parse Binance Crypto Candles
+# Fixed Binance Crypto Data Fetcher
 def get_crypto_candles(symbol, interval_str, limit=50):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval_str}&limit={limit}"
     try:
         res = requests.get(url, timeout=10).json()
-        formatted_candles = []
-        for c in res:
-            # timestamp, open, high, low, close
-            formatted_candles.append([c[0], float(c[1]), float(c[2]), float(c[3]), float(c[4])])
-        return formatted_candles
+        if isinstance(res, list):
+            formatted_candles = []
+            for c in res:
+                # [time, open, high, low, close]
+                formatted_candles.append([c[0], float(c[1]), float(c[2]), float(c[3]), float(c[4])])
+            return formatted_candles
+        else:
+            print(f"Binance API Response Error: {res}")
+            return []
     except Exception as e:
         print(f"Crypto data fetch error: {e}")
         return []
@@ -179,17 +180,15 @@ def scan_market():
         crypto_tf_map = [
             {"tf_name": "1H", "interval": "1h"},
             {"tf_name": "2H", "interval": "2h"},
-            {"tf_name": "3H", "interval": "3h"},
             {"tf_name": "4H", "interval": "4h"}
         ]
 
         for symbol in crypto_symbols:
-            # Daily PDH/PDL Fetch for Crypto
             daily_candles = get_crypto_candles(symbol, "1d", limit=5)
             pdh, pdl = None, None
             if len(daily_candles) >= 2:
-                pdh = daily_candles[-2][2] # Previous Day High
-                pdl = daily_candles[-2][3] # Previous Day Low
+                pdh = daily_candles[-2][2]
+                pdl = daily_candles[-2][3]
 
             for tf in crypto_tf_map:
                 candles = get_crypto_candles(symbol, tf["interval"], limit=10)
@@ -203,7 +202,6 @@ def scan_market():
                     entry_act, exit_act, sweep_cat = None, None, None
                     sl, t1, t2 = 0, 0, 0
 
-                    # Crypto 1. MAIN SWEEP (PDH / PDL)
                     if pdl and curr_low < pdl and curr_close > pdl:
                         entry_act, exit_act = "CALL BUY (Bullish Sweep)", "PUT EXIT"
                         sweep_cat = "MAIN LIQUIDITY (PDL Cleared)"
@@ -218,7 +216,6 @@ def scan_market():
                         risk = sl - curr_close
                         t1, t2 = round(curr_close - (risk * 2), 2), round(curr_close - (risk * 3), 2)
 
-                    # Crypto 2. INTERNAL SWEEP (1H, 2H, 3H, 4H)
                     elif curr_low < prev_low and curr_close > prev_low:
                         entry_act, exit_act = "CALL BUY (Bullish Sweep)", "PUT EXIT"
                         sweep_cat = f"INTERNAL LIQUIDITY ({tf['tf_name']})"
