@@ -48,20 +48,27 @@ def send_telegram_alert(market_category, signal_action, exit_action, sweep_type,
     except Exception as e:
         print(f"Telegram alert error: {e}")
 
-# Fixed Binance Crypto Data Fetcher
+# Safe Crypto Data Fetcher with Headers & Type Protection
 def get_crypto_candles(symbol, interval_str, limit=50):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval_str}&limit={limit}"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        res = requests.get(url, timeout=10).json()
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            print(f"Binance HTTP Error: {response.status_code}")
+            return []
+        
+        res = response.json()
         if isinstance(res, list):
             formatted_candles = []
             for c in res:
-                # [time, open, high, low, close]
-                formatted_candles.append([c[0], float(c[1]), float(c[2]), float(c[3]), float(c[4])])
+                try:
+                    # [time, open, high, low, close]
+                    formatted_candles.append([c[0], float(c[1]), float(c[2]), float(c[3]), float(c[4])])
+                except (ValueError, TypeError):
+                    continue
             return formatted_candles
-        else:
-            print(f"Binance API Response Error: {res}")
-            return []
+        return []
     except Exception as e:
         print(f"Crypto data fetch error: {e}")
         return []
@@ -154,7 +161,7 @@ def scan_market():
                                 sweep_cat = f"INTERNAL LIQUIDITY ({tf['tf_name']})"
                                 sl = round(curr_low * 0.9975, 2)
                                 risk = curr_close - sl
-                                t1, t2 = round(curr_close + (risk * 2), 2), round(curr_close + (risk * 3), 2)
+                                t1, t2 = round(curr_close + (risk * 2), 2), round(round(curr_close + (risk * 3), 2))
 
                             elif curr_high > prev_high and curr_close < prev_high:
                                 entry_act, exit_act = "PUT BUY (Bearish Sweep)", "CALL EXIT"
@@ -245,4 +252,4 @@ def scan_market():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-                        
+        
