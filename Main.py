@@ -1,255 +1,326 @@
 import os
-import requests
-import pytz
-from datetime import datetime, timedelta
-from flask import Flask, jsonify
-from SmartApi import SmartConnect
+import time
+import datetime
 import pyotp
+import requests
+import pandas as pd
+import numpy as np
+from SmartApi import SmartConnect
 
-app = Flask(__name__)
+# ==========================================
+# 1. CREDENTIALS & CONFIGURATION
+# ==========================================
+CLIENT_ID = os.getenv("ANGEL_CLIENT_ID", "AAAE383027")
+MPIN = os.getenv("ANGEL_MPIN", "2222")
+API_KEY = os.getenv("ANGEL_API_KEY", "5L3fPSxW")
+TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "CV42EVYE6UNCQKEIZWEQHSIUZM")
 
-# Credentials
-API_KEY      = os.getenv("API_KEY", "5L3fPSxW")
-CLIENT_CODE  = os.getenv("CLIENT_CODE", "AAAE383027")
-PASSWORD     = os.getenv("PASSWORD", "2222")
-TOTP_SECRET  = os.getenv("TOTP_SECRET", "CV42EVYE6UNCQKEIZWEQHSIUZM")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-BOT_TOKEN    = os.getenv("BOT_TOKEN", "8736794778:AAHusM5e2JCHty4KDx6QKdZl26SeY65s5d4")
-CHAT_ID      = os.getenv("CHAT_ID", "-1004423772510")
-
-last_sent_signals = {}
-
-def is_indian_market_open():
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
-    if now.weekday() >= 5:
-        return False
-    market_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_end   = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return market_start <= now <= market_end
-
-def send_telegram_alert(market_category, signal_action, exit_action, sweep_type, symbol, price, sl, target1, target2, tf):
-    msg = f"🚨 *{market_category} SMC SIGNAL*\n\n" \
-          f"🟢 *ACTION:* `{signal_action}`\n" \
-          f"🔴 *EXIT ALERT:* `{exit_action}`\n\n" \
-          f"⚡ *Liquidity Type:* `{sweep_type}`\n" \
-          f"📈 *Symbol:* `{symbol}`\n" \
-          f"⏱️ *Timeframe:* `{tf}`\n\n" \
-          f"💰 *Entry Price:* `{price}`\n" \
-          f"🛑 *Stop Loss (Buffer):* `{sl}`\n" \
-          f"🎯 *Target 1 (1:2 RR):* `{target1}`\n" \
-          f"🚀 *Target 2 (1:3 RR):* `{target2}`\n\n" \
-          f"🤖 *Bot:* `@luckyTradingV310Bot`"
-    
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+# ==========================================
+# 2. AUTHENTICATION & TELEGRAM UTILITIES
+# ==========================================
+def get_angel_session():
     try:
-        requests.post(url, json=payload)
+        smart_api = SmartConnect(api_key=API_KEY)
+        totp = pyotp.TOTP(TOTP_SECRET).now()
+        data = smart_api.generateSession(CLIENT_ID, MPIN, totp)
+        if data and data.get('status'):
+            print("Angel One Session Connected Successfully.")
+            return smart_api
+        else:
+            print(f"Login Failed: {data.get('message')}")
+            return None
     except Exception as e:
-        print(f"Telegram alert error: {e}")
+        print(f"Auth Exception: {e}")
+        return None
 
-# Safe Crypto Data Fetcher with Headers & Type Protection
-def get_crypto_candles(symbol, interval_str, limit=50):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval_str}&limit={limit}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"[TELEGRAM ALERT LOG]:\n{message}\n")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            print(f"Binance HTTP Error: {response.status_code}")
-            return []
-        
-        res = response.json()
-        if isinstance(res, list):
-            formatted_candles = []
-            for c in res:
-                try:
-                    # [time, open, high, low, close]
-                    formatted_candles.append([c[0], float(c[1]), float(c[2]), float(c[3]), float(c[4])])
-                except (ValueError, TypeError):
-                    continue
-            return formatted_candles
-        return []
-    except Exception as e:
-        print(f"Crypto data fetch error: {e}")
-        return []
+        requests.post(url, json=payload, timeout=10)
+    except Exception as err:
+        print(f"Telegram Dispatch Error: {err}")
 
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"status": "Angel One + Crypto SMC Scanner Active!", "client": CLIENT_CODE}), 200
+# ==========================================
+# 3. INDICATOR CALCULATIONS
+# ==========================================
+def calculate_vwap(df):
+    v = df['Volume'].values
+    tp = (df['High'] + df['Low'] + df['Close']) / 3.0
+    cum_vol = v.cumsum()
+    cum_vol = np.where(cum_vol == 0, 1e-5, cum_vol)
+    df['VWAP'] = (tp * v).cumsum() / cum_vol
+    return df
 
-@app.route("/scan", methods=["GET", "POST"])
-def scan_market():
-    global last_sent_signals
-    signals_found = []
-    now = datetime.now()
+def calculate_order_flow_delta(df):
+    spread = (df['High'] - df['Low']).replace(0, 0.05)
+    # Intraday Order Flow Delta & Buy/Sell Volume Approximation
+    df['Buy_Vol'] = ((df['Close'] - df['Low']) / spread) * df['Volume']
+    df['Sell_Vol'] = df['Volume'] - df['Buy_Vol']
+    df['Delta'] = df['Buy_Vol'] - df['Sell_Vol']
+    df['CVD'] = df['Delta'].cumsum()
+    df['Vol_SMA'] = df['Volume'].rolling(window=20).mean().bfill()
+    return df
 
-    # =========================================================
-    # PART 1: INDIAN MARKET (ANGEL ONE API)
-    # =========================================================
-    if is_indian_market_open():
-        try:
-            smart_api = SmartConnect(api_key=API_KEY)
-            totp_code = pyotp.TOTP(TOTP_SECRET).now()
-            login_res = smart_api.generateSession(CLIENT_CODE, PASSWORD, totp_code)
-            
-            if login_res.get('status'):
-                from_d = (now - timedelta(days=7)).strftime("%Y-%m-%d 09:15")
-                to_d   = now.strftime("%Y-%m-%d %H:%M")
+# ==========================================
+# 4. CORE SMC / ICT / VWAP ANALYSIS ENGINE
+# ==========================================
+def analyze_market(obj, token="99926000", symbol="NIFTY 50", exchange="NSE"):
+    now = datetime.datetime.now()
+    from_date = (now - datetime.timedelta(days=7)).strftime("%Y-%m-%d 09:15")
+    to_date = now.strftime("%Y-%m-%d %H:%M")
 
-                indian_symbols = [
-                    {"name": "NIFTY", "token": "99926000"},
-                    {"name": "BANKNIFTY", "token": "99926009"}
-                ]
+    # A. 5-Minute Intraday Data Fetch
+    res_5m = obj.getCandleData({
+        "exchange": exchange,
+        "symboltoken": token,
+        "interval": "FIVE_MINUTE",
+        "fromdate": from_date,
+        "todate": to_date
+    })
 
-                timeframes = [
-                    {"tf_name": "1H", "interval": "ONE_HOUR"},
-                    {"tf_name": "2H", "interval": "TWO_HOUR"},
-                    {"tf_name": "3H", "interval": "THREE_HOUR"},
-                    {"tf_name": "4H", "interval": "FOUR_HOUR"}
-                ]
+    # B. Daily Data Fetch (PDH, PDL)
+    res_1d = obj.getCandleData({
+        "exchange": exchange,
+        "symboltoken": token,
+        "interval": "ONE_DAY",
+        "fromdate": (now - datetime.timedelta(days=30)).strftime("%Y-%m-%d 09:15"),
+        "todate": to_date
+    })
 
-                for item in indian_symbols:
-                    daily_params = {
-                        "exchange": "NSE",
-                        "symboltoken": item["token"],
-                        "interval": "ONE_DAY",
-                        "fromdate": (now - timedelta(days=5)).strftime("%Y-%m-%d 09:15"),
-                        "todate": to_d
-                    }
-                    d_res = smart_api.getCandleData(daily_params)
-                    pdh, pdl = None, None
-                    if d_res and 'data' in d_res and len(d_res['data']) >= 2:
-                        pdh = d_res['data'][-2][2]
-                        pdl = d_res['data'][-2][3]
+    # C. Weekly Data Fetch (PWH, PWL)
+    res_1w = obj.getCandleData({
+        "exchange": exchange,
+        "symboltoken": token,
+        "interval": "ONE_DAY",
+        "fromdate": (now - datetime.timedelta(days=90)).strftime("%Y-%m-%d 09:15"),
+        "todate": to_date
+    })
 
-                    for tf in timeframes:
-                        params = {
-                            "exchange": "NSE",
-                            "symboltoken": item["token"],
-                            "interval": tf["interval"],
-                            "fromdate": from_d,
-                            "todate": to_d
-                        }
-                        res = smart_api.getCandleData(params)
-                        if res and 'data' in res and len(res['data']) >= 2:
-                            candles = res['data']
-                            prev_c, curr_c = candles[-2], candles[-1]
-                            
-                            candle_time = curr_c[0]
-                            prev_high, prev_low = prev_c[2], prev_c[3]
-                            curr_high, curr_low, curr_close = curr_c[2], curr_c[3], curr_c[4]
+    if not res_5m or not res_5m.get('data') or not res_1d or not res_1d.get('data'):
+        print(f"Data feed empty for {symbol}")
+        return
 
-                            entry_act, exit_act, sweep_cat = None, None, None
-                            sl, t1, t2 = 0, 0, 0
+    cols = ["Timestamp", "Open", "High", "Low", "Close", "Volume"]
+    df = pd.DataFrame(res_5m['data'], columns=cols)
+    df[['Open', 'High', 'Low', 'Close', 'Volume']] = df[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
 
-                            if pdl and curr_low < pdl and curr_close > pdl:
-                                entry_act, exit_act = "CALL BUY (Bullish Sweep)", "PUT EXIT"
-                                sweep_cat = "MAIN LIQUIDITY (PDL Cleared)"
-                                sl = round(curr_low * 0.9975, 2)
-                                risk = curr_close - sl
-                                t1, t2 = round(curr_close + (risk * 2), 2), round(curr_close + (risk * 3), 2)
+    daily_df = pd.DataFrame(res_1d['data'], columns=cols)
+    daily_df[['Open', 'High', 'Low', 'Close', 'Volume']] = daily_df[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
 
-                            elif pdh and curr_high > pdh and curr_close < pdh:
-                                entry_act, exit_act = "PUT BUY (Bearish Sweep)", "CALL EXIT"
-                                sweep_cat = "MAIN LIQUIDITY (PDH Cleared)"
-                                sl = round(curr_high * 1.0025, 2)
-                                risk = sl - curr_close
-                                t1, t2 = round(curr_close - (risk * 2), 2), round(curr_close - (risk * 3), 2)
+    weekly_df = pd.DataFrame(res_1w['data'], columns=cols)
+    weekly_df[['Open', 'High', 'Low', 'Close', 'Volume']] = weekly_df[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
 
-                            elif curr_low < prev_low and curr_close > prev_low:
-                                entry_act, exit_act = "CALL BUY (Bullish Sweep)", "PUT EXIT"
-                                sweep_cat = f"INTERNAL LIQUIDITY ({tf['tf_name']})"
-                                sl = round(curr_low * 0.9975, 2)
-                                risk = curr_close - sl
-                                t1, t2 = round(curr_close + (risk * 2), 2), round(round(curr_close + (risk * 3), 2))
+    # Key Levels Calculation
+    pdh = float(daily_df['High'].iloc[-2])
+    pdl = float(daily_df['Low'].iloc[-2])
+    pwh = float(weekly_df['High'].iloc[-6]) if len(weekly_df) >= 6 else pdh
+    pwl = float(weekly_df['Low'].iloc[-6]) if len(weekly_df) >= 6 else pdl
 
-                            elif curr_high > prev_high and curr_close < prev_high:
-                                entry_act, exit_act = "PUT BUY (Bearish Sweep)", "CALL EXIT"
-                                sweep_cat = f"INTERNAL LIQUIDITY ({tf['tf_name']})"
-                                sl = round(curr_high * 1.0025, 2)
-                                risk = sl - curr_close
-                                t1, t2 = round(curr_close - (risk * 2), 2), round(curr_close - (risk * 3), 2)
+    # Technical Layers
+    df = calculate_vwap(df)
+    df = calculate_order_flow_delta(df)
 
-                            if entry_act:
-                                sig_key = f"IND_{item['name']}_{tf['tf_name']}_{entry_act}_{candle_time}"
-                                if last_sent_signals.get(f"IND_{item['name']}_{tf['tf_name']}") != sig_key:
-                                    send_telegram_alert("INDIAN MARKET", entry_act, exit_act, sweep_cat, item["name"], curr_close, sl, t1, t2, tf['tf_name'])
-                                    last_sent_signals[f"IND_{item['name']}_{tf['tf_name']}"] = sig_key
-                                    signals_found.append(f"IND: {item['name']} {tf['tf_name']}")
-        except Exception as e:
-            print(f"Indian Market Scanner Error: {e}")
+    if len(df) < 5:
+        return
 
-    # =========================================================
-    # PART 2: CRYPTO MARKET (BINANCE PUBLIC API - 24x7 RUN)
-    # =========================================================
-    try:
-        crypto_symbols = ["BTCUSDT", "ETHUSDT"]
-        crypto_tf_map = [
-            {"tf_name": "1H", "interval": "1h"},
-            {"tf_name": "2H", "interval": "2h"},
-            {"tf_name": "4H", "interval": "4h"}
+    # Candle References
+    curr = df.iloc[-1]    # Present Candle (n)
+    prev = df.iloc[-2]    # Previous Candle (n-1)
+    prev2 = df.iloc[-3]   # Candle (n-2)
+    prev3 = df.iloc[-4]   # Candle (n-3)
+
+    # Metrics
+    curr_delta_pos = curr['Delta'] > 0
+    curr_delta_neg = curr['Delta'] < 0
+    cvd_expanding_up = curr['CVD'] > prev['CVD']
+    cvd_expanding_down = curr['CVD'] < prev['CVD']
+    above_vol_sma = curr['Volume'] >= curr['Vol_SMA']
+    above_vwap = curr['Close'] > curr['VWAP']
+    below_vwap = curr['Close'] < curr['VWAP']
+
+    entry_type = None
+    entry_price = float(curr['Close'])
+    sl = 0.0
+    tp1 = 0.0
+    tp2 = 0.0
+    setup_name = ""
+    reasons = []
+
+    # ==========================================================
+    # STRATEGY 1: LIQUIDITY SWEEP + RETEST + VWAP + DELTA (+) / (-)
+    # ==========================================================
+    # Bullish Liquidity Sweep (PDL / PWL / Swing Low Sweep & Reject)
+    bull_sweep = (prev['Low'] < pdl and prev['Close'] > pdl) or (prev['Low'] < prev2['Low'] and prev['Close'] > prev2['Low'])
+    bull_fvg_retest = (curr['Low'] <= prev2['High']) and (curr['Close'] >= prev2['High'])
+    bull_ob_retest = (prev2['Close'] < prev2['Open']) and (curr['Low'] <= prev2['High']) and (curr['Close'] >= prev2['Low'])
+
+    if bull_sweep and (bull_fvg_retest or bull_ob_retest) and above_vwap and curr_delta_pos and cvd_expanding_up:
+        entry_type = "BUY"
+        setup_name = "Liquidity Sweep + FVG/OB Retest (Bullish)"
+        sl = float(min(curr['Low'], prev['Low']) - 5.0)
+        reasons = [
+            "PDL / Swing Low Liquidity Hunt Complete",
+            "FVG / OB Zone Successfully Retested",
+            "Holding Above Institutional VWAP",
+            f"Present Delta Positive (+{curr['Delta']:.0f}) & CVD Expanding Up",
+            "Above Average Volume Activity" if above_vol_sma else "Standard Institutional Flow"
         ]
 
-        for symbol in crypto_symbols:
-            daily_candles = get_crypto_candles(symbol, "1d", limit=5)
-            pdh, pdl = None, None
-            if len(daily_candles) >= 2:
-                pdh = daily_candles[-2][2]
-                pdl = daily_candles[-2][3]
+    # Bearish Liquidity Sweep (PDH / PWH / Swing High Sweep & Reject)
+    bear_sweep = (prev['High'] > pdh and prev['Close'] < pdh) or (prev['High'] > prev2['High'] and prev['Close'] < prev2['High'])
+    bear_fvg_retest = (curr['High'] >= prev2['Low']) and (curr['Close'] <= prev2['Low'])
+    bear_ob_retest = (prev2['Close'] > prev2['Open']) and (curr['High'] >= prev2['Low']) and (curr['Close'] <= prev2['High'])
 
-            for tf in crypto_tf_map:
-                candles = get_crypto_candles(symbol, tf["interval"], limit=10)
-                if len(candles) >= 2:
-                    prev_c, curr_c = candles[-2], candles[-1]
-                    candle_time = curr_c[0]
-                    
-                    prev_high, prev_low = prev_c[2], prev_c[3]
-                    curr_high, curr_low, curr_close = curr_c[2], curr_c[3], curr_c[4]
+    if bear_sweep and (bear_fvg_retest or bear_ob_retest) and below_vwap and curr_delta_neg and cvd_expanding_down:
+        entry_type = "SELL"
+        setup_name = "Liquidity Sweep + FVG/OB Retest (Bearish)"
+        sl = float(max(curr['High'], prev['High']) + 5.0)
+        reasons = [
+            "PDH / Swing High Liquidity Hunt Complete",
+            "FVG / OB Zone Successfully Retested",
+            "Holding Below Institutional VWAP",
+            f"Present Delta Negative ({curr['Delta']:.0f}) & CVD Falling Down",
+            "Above Average Volume Activity" if above_vol_sma else "Standard Institutional Flow"
+        ]
 
-                    entry_act, exit_act, sweep_cat = None, None, None
-                    sl, t1, t2 = 0, 0, 0
+    # ==========================================================
+    # STRATEGY 2: ORDER BLOCK BREAKER (UP & DOWN RETEST)
+    # ==========================================================
+    if not entry_type:
+        # Bullish Breaker: Failed Bearish OB Broken Upward -> Retested as Support
+        failed_bear_ob = prev3['Close'] < prev3['Open']
+        breaker_up_level = float(prev3['High'])
+        broken_up = prev['Close'] > breaker_up_level
+        retested_up_support = (curr['Low'] <= breaker_up_level) and (curr['Close'] >= breaker_up_level)
 
-                    if pdl and curr_low < pdl and curr_close > pdl:
-                        entry_act, exit_act = "CALL BUY (Bullish Sweep)", "PUT EXIT"
-                        sweep_cat = "MAIN LIQUIDITY (PDL Cleared)"
-                        sl = round(curr_low * 0.9975, 2)
-                        risk = curr_close - sl
-                        t1, t2 = round(curr_close + (risk * 2), 2), round(curr_close + (risk * 3), 2)
+        if failed_bear_ob and broken_up and retested_up_support and above_vwap and curr_delta_pos and cvd_expanding_up:
+            entry_type = "BUY"
+            setup_name = "Bullish Breaker Block Retest"
+            sl = float(min(curr['Low'], breaker_up_level) - 5.0)
+            reasons = [
+                f"Failed Bearish OB at {breaker_up_level:.2f} Converted to Support",
+                "Clean Retest on Present Candle",
+                "Confluence Above VWAP Baseline",
+                f"Order Flow Delta Positive (+{curr['Delta']:.0f})"
+            ]
 
-                    elif pdh and curr_high > pdh and curr_close < pdh:
-                        entry_act, exit_act = "PUT BUY (Bearish Sweep)", "CALL EXIT"
-                        sweep_cat = "MAIN LIQUIDITY (PDH Cleared)"
-                        sl = round(curr_high * 1.0025, 2)
-                        risk = sl - curr_close
-                        t1, t2 = round(curr_close - (risk * 2), 2), round(curr_close - (risk * 3), 2)
+        # Bearish Breaker: Failed Bullish OB Broken Downward -> Retested as Resistance
+        failed_bull_ob = prev3['Close'] > prev3['Open']
+        breaker_down_level = float(prev3['Low'])
+        broken_down = prev['Close'] < breaker_down_level
+        retested_down_resistance = (curr['High'] >= breaker_down_level) and (curr['Close'] <= breaker_down_level)
 
-                    elif curr_low < prev_low and curr_close > prev_low:
-                        entry_act, exit_act = "CALL BUY (Bullish Sweep)", "PUT EXIT"
-                        sweep_cat = f"INTERNAL LIQUIDITY ({tf['tf_name']})"
-                        sl = round(curr_low * 0.9975, 2)
-                        risk = curr_close - sl
-                        t1, t2 = round(curr_close + (risk * 2), 2), round(curr_close + (risk * 3), 2)
+        if failed_bull_ob and broken_down and retested_down_resistance and below_vwap and curr_delta_neg and cvd_expanding_down:
+            entry_type = "SELL"
+            setup_name = "Bearish Breaker Block Retest"
+            sl = float(max(curr['High'], breaker_down_level) + 5.0)
+            reasons = [
+                f"Failed Bullish OB at {breaker_down_level:.2f} Converted to Resistance",
+                "Clean Retest on Present Candle",
+                "Confluence Below VWAP Baseline",
+                f"Order Flow Delta Negative ({curr['Delta']:.0f})"
+            ]
 
-                    elif curr_high > prev_high and curr_close < prev_high:
-                        entry_act, exit_act = "PUT BUY (Bearish Sweep)", "CALL EXIT"
-                        sweep_cat = f"INTERNAL LIQUIDITY ({tf['tf_name']})"
-                        sl = round(curr_high * 1.0025, 2)
-                        risk = sl - curr_close
-                        t1, t2 = round(curr_close - (risk * 2), 2), round(curr_close - (risk * 3), 2)
-
-                    if entry_act:
-                        sig_key = f"CRYPTO_{symbol}_{tf['tf_name']}_{entry_act}_{candle_time}"
-                        if last_sent_signals.get(f"CRYPTO_{symbol}_{tf['tf_name']}") != sig_key:
-                            send_telegram_alert("CRYPTO MARKET", entry_act, exit_act, sweep_cat, symbol, curr_close, sl, t1, t2, tf['tf_name'])
-                            last_sent_signals[f"CRYPTO_{symbol}_{tf['tf_name']}"] = sig_key
-                            signals_found.append(f"CRYPTO: {symbol} {tf['tf_name']}")
-
-    except Exception as e:
-        print(f"Crypto Scanner Error: {e}")
-
-    return jsonify({"status": "success", "signals": signals_found}), 200
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    # ==========================================================
+    # STRATEGY 3: FVG/OB RETEST + STRONG VWAP MOMENTUM SURGE
+    # ==========================================================
+    if not entry_type:
+        vwap_touch_bounce = (curr['Low'] <= curr['VWAP'] * 1.0008) and (curr['Close'] > curr['VWAP'])
+        strong_green_body = (curr['Close'] > curr['Open']) and ((curr['Close'] - curr['Open']) >= (curr['High'] - curr['Low']) * 0.55)
         
+        if (bull_fvg_retest or bull_ob_retest) and vwap_touch_bounce and strong_green_body and curr_delta_pos and cvd_expanding_up:
+            entry_type = "BUY"
+            setup_name = "FVG/OB Retest + VWAP Strong Momentum Bounce"
+            sl = float(curr['Low'] - 5.0)
+            reasons = [
+                "Institutional FVG/OB Retest Validated",
+                "VWAP Dynamic Support Reaction",
+                "Strong Green Body Momentum Bar",
+                f"Positive Delta (+{curr['Delta']:.0f}) with High Relative Volume"
+            ]
+
+        vwap_touch_rejection = (curr['High'] >= curr['VWAP'] * 0.9992) and (curr['Close'] < curr['VWAP'])
+        strong_red_body = (curr['Close'] < curr['Open']) and ((curr['Open'] - curr['Close']) >= (curr['High'] - curr['Low']) * 0.55)
+
+        if (bear_fvg_retest or bear_ob_retest) and vwap_touch_rejection and strong_red_body and curr_delta_neg and cvd_expanding_down:
+            entry_type = "SELL"
+            setup_name = "FVG/OB Retest + VWAP Strong Momentum Rejection"
+            sl = float(curr['High'] + 5.0)
+            reasons = [
+                "Institutional FVG/OB Retest Validated",
+                "VWAP Dynamic Resistance Reaction",
+                "Strong Red Body Momentum Bar",
+                f"Negative Delta ({curr['Delta']:.0f}) with High Relative Volume"
+            ]
+
+    # ==========================================================
+    # 5. RISK MANAGEMENT (TP1, TP2, SL) & DISPATCH
+    # ==========================================================
+    if entry_type:
+        if entry_type == "BUY":
+            risk = entry_price - sl
+            if risk > 0:
+                tp1 = entry_price + (2.0 * risk)
+                tp2 = max(entry_price + (3.0 * risk), pdh, pwh)
+        else:
+            risk = sl - entry_price
+            if risk > 0:
+                tp1 = entry_price - (2.0 * risk)
+                tp2 = min(entry_price - (3.0 * risk), pdl, pwl)
+
+        if risk > 0:
+            icon = "🟢" if entry_type == "BUY" else "🔴"
+            delta_status = f"+{curr['Delta']:.0f}" if curr['Delta'] > 0 else f"{curr['Delta']:.0f}"
+            cvd_trend_label = "🟢 Bullish Accumulation (Expanding)" if cvd_expanding_up else "🔴 Bearish Distribution (Falling)"
+
+            msg = (
+                f"⚡ *ICT & SMC INSTITUTIONAL ALERT: {symbol}* ⚡\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 *SETUP:* `{setup_name}`\n"
+                f"📌 *ACTION:* `{entry_type}` {icon}\n"
+                f"💰 *Entry Price:* `{entry_price:.2f}`\n"
+                f"🛑 *Stop Loss (SL):* `{sl:.2f}` _(Risk: {abs(risk):.2f} pts)_\n"
+                f"🎯 *Target 1 (1:2 R:R):* `{tp1:.2f}`\n"
+                f"🚀 *Target 2 (1:3 R:R / Liquidity):* `{tp2:.2f}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 *VWAP Level:* `{curr['VWAP']:.2f}`\n"
+                f"⚡ *Present Candle Delta:* `{delta_status}`\n"
+                f"🌊 *CVD Momentum:* `{cvd_trend_label}`\n"
+                f"📍 *PDH:* `{pdh:.2f}` | *PDL:* `{pdl:.2f}`\n"
+                f"📍 *PWH:* `{pwh:.2f}` | *PWL:* `{pwl:.2f}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🔍 *Confluence Check:*\n• " + "\n• ".join(reasons) + "\n"
+                f"━━━━━━━━━━━━━━━━━━━"
+            )
+            send_telegram(msg)
+            print(f"Triggered: {setup_name} | {entry_type} @ {entry_price:.2f}")
+
+# ==========================================
+# 6. MAIN EXECUTION LOOP
+# ==========================================
+if __name__ == "__main__":
+    session = get_angel_session()
+    print("ICT/SMC Sweep + Breaker + VWAP + Delta Engine Running on 5M Cycle...")
+
+    while True:
+        try:
+            if session:
+                # NIFTY 50 Token: 99926000 (NSE)
+                analyze_market(session, token="99926000", symbol="NIFTY 50", exchange="NSE")
+            else:
+                session = get_angel_session()
+            time.sleep(300)  # 5-Minute Candle Scan Loop
+        except Exception as err:
+            print(f"Loop Exception: {err}")
+            time.sleep(60)
