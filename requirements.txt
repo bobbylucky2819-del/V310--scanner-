@@ -5,3 +5,5 @@ numpy
 requests
 flask
 gunicorn
+requests
+pandas
