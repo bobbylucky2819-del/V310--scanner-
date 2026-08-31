@@ -1,323 +1,372 @@
 import os
 import time
-import datetime
-import threading
-import pyotp
+import json
+import datetime as dt
+from zoneinfo import ZoneInfo
 import requests
 import pandas as pd
-import numpy as np
-from flask import Flask
-from SmartApi import SmartConnect
 
-# ==========================================
-# 1. FLASK WEB SERVER (FOR RENDER & UPTIMEROBOT)
-# ==========================================
-app = Flask(__name__)
+# ================= Telegram Config =================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
-@app.route('/')
-def health_check():
-    return "ICT/SMC Multi-Timeframe Order Flow Algo Bot is Active 24/7 on Render!"
+if not BOT_TOKEN or not CHAT_ID:
+    raise SystemExit("ERROR: Set BOT_TOKEN and CHAT_ID environment variables before running.")
 
-# ==========================================
-# 2. CREDENTIALS & CONFIGURATION
-# ==========================================
-CLIENT_ID = os.getenv("ANGEL_CLIENT_ID", "AAAE383027")
-MPIN = os.getenv("ANGEL_MPIN", "2222")
-API_KEY = os.getenv("ANGEL_API_KEY", "5L3fPSxW")
-TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET", "CV42EVYE6UNCQKEIZWEQHSIUZM")
+session = requests.Session()
+IST = ZoneInfo("Asia/Kolkata")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
-# ==========================================
-# 3. AUTHENTICATION & TELEGRAM UTILITIES
-# ==========================================
-def get_angel_session():
+def send_telegram_msg(msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"}
     try:
-        smart_api = SmartConnect(api_key=API_KEY)
-        totp = pyotp.TOTP(TOTP_SECRET).now()
-        data = smart_api.generateSession(CLIENT_ID, MPIN, totp)
-        if data and data.get('status'):
-            print("Angel One Session Connected Successfully.")
-            return smart_api
-        else:
-            print(f"Login Failed: {data.get('message')}")
-            return None
+        session.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Auth Exception: {e}")
+        print(f"Telegram Error: {e}")
+
+# ================= Direct Yahoo Finance Fetch =================
+def fetch_yahoo_direct(symbol, interval, range_):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {"interval": interval, "range": range_}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        r = session.get(url, params=params, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        result = data["chart"]["result"][0]
+        ts = result["timestamp"]
+        quote = result["indicators"]["quote"][0]
+        df = pd.DataFrame({
+            "Open": quote["open"],
+            "High": quote["high"],
+            "Low": quote["low"],
+            "Close": quote["close"],
+            "Volume": quote["volume"],
+        }, index=pd.to_datetime(ts, unit="s", utc=True).tz_convert(IST))
+        return df.dropna()
+    except Exception as e:
+        print(f"Fetch Error [{symbol} {interval}]: {e}")
+        return pd.DataFrame()
+
+# ================= Order Flow (Angel One Depth) =================
+DEPTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "depth_data.json")
+
+def get_order_flow_bias(symbol):
+    nse_name = symbol.replace(".NS", "")
+    if not os.path.exists(DEPTH_FILE):
+        return None
+    try:
+        with open(DEPTH_FILE) as f:
+            depth = json.load(f)
+        entry = depth.get(nse_name)
+        if not entry or time.time() - entry.get("updated", 0) > 120:
+            return None
+        imbalance = entry.get("imbalance", 0)
+        if imbalance > 0.1:
+            return "bullish"
+        elif imbalance < -0.1:
+            return "bearish"
+        return "neutral"
+    except Exception:
         return None
 
-def send_telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"[TELEGRAM LOG]:\n{message}\n")
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
+# ================= Market Hours Helper =================
+def is_nse_market_open():
+    """Mon-Fri, 9:15 AM to 3:30 PM IST"""
+    now = dt.datetime.now(IST)
+    if now.weekday() >= 5:
+        return False
+    market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return market_open <= now <= market_close
+
+def is_crypto_symbol(symbol):
+    return symbol.endswith("-USD")
+
+# ================= Symbols & Timeframes =================
+SYMBOLS = [
+    "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD",
+    "^NSEI", "^NSEBANK", "RELIANCE.NS", "TCS.NS", "INFY.NS"
+]
+TIMEFRAMES = ["5m", "1h", "2h", "4h"]
+
+# ================= Persistent State =================
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_state.json")
+
+def save_state():
     try:
-        requests.post(url, json=payload, timeout=10)
-    except Exception as err:
-        print(f"Telegram Dispatch Error: {err}")
+        with open(STATE_FILE, "w") as f:
+            json.dump(demo_accounts, f, indent=2)
+    except Exception as e:
+        print(f"Save State Error: {e}")
 
-# ==========================================
-# 4. INDICATOR & ORDER FLOW CALCULATIONS
-# ==========================================
-def calculate_vwap(df):
-    v = df['Volume'].values
-    tp = (df['High'] + df['Low'] + df['Close']) / 3.0
-    cum_vol = v.cumsum()
-    cum_vol = np.where(cum_vol == 0, 1e-5, cum_vol)
-    df['VWAP'] = (tp * v).cumsum() / cum_vol
+def load_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Load State Error: {e}")
+    return None
+
+demo_accounts = load_state()
+if demo_accounts is None:
+    demo_accounts = {}
+    for i in range(1, 31):
+        tf = "5m" if i <= 8 else ("1h" if i <= 16 else ("2h" if i <= 23 else "4h"))
+        demo_accounts[f"DEMO_{i:02d}"] = {"tf": tf, "balance": 100000.0, "active_trade": None}
+    save_state()
+
+# ================= Technical & SMC Indicators =================
+def compute_indicators(df):
+    if df.empty or len(df) < 15:
+        return df
+    high_low = df['High'] - df['Low']
+    high_cp = (df['High'] - df['Close'].shift(1)).abs()
+    low_cp = (df['Low'] - df['Close'].shift(1)).abs()
+    df['TR'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+    df['ATR'] = df['TR'].rolling(14).mean()
+
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+    tp_vol = df['Volume'] * typical_price
+    day_key = df.index.date
+    df['VWAP'] = tp_vol.groupby(day_key).cumsum() / df['Volume'].groupby(day_key).cumsum().replace(0, 1)
+
+    signed_vol = df['Volume'].where(df['Close'] >= df['Open'], -df['Volume'])
+    df['CVD'] = signed_vol.groupby(day_key).cumsum()
     return df
 
-def calculate_order_flow_delta(df):
-    spread = (df['High'] - df['Low']).replace(0, 0.05)
-    df['Buy_Vol'] = ((df['Close'] - df['Low']) / spread) * df['Volume']
-    df['Sell_Vol'] = df['Volume'] - df['Buy_Vol']
-    df['Delta'] = df['Buy_Vol'] - df['Sell_Vol']
-    df['CVD'] = df['Delta'].cumsum()
-    df['Vol_SMA'] = df['Volume'].rolling(window=20).mean().bfill()
-    return df
+def compute_delta_approx(df, lookback=10):
+    if len(df) < lookback:
+        return 0, "neutral"
+    recent = df.iloc[-lookback:]
+    buy_vol = recent.loc[recent['Close'] >= recent['Open'], 'Volume'].sum()
+    sell_vol = recent.loc[recent['Close'] < recent['Open'], 'Volume'].sum()
+    delta = buy_vol - sell_vol
+    return delta, ("bullish" if delta > 0 else "bearish" if delta < 0 else "neutral")
 
-def resample_to_4hr(df_1h):
-    df = df_1h.copy()
-    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
-    df.set_index('Timestamp', inplace=True)
-    df_4h = df.resample('4h').agg({
-        'Open': 'first',
-        'High': 'max',
-        'Low': 'min',
-        'Close': 'last',
-        'Volume': 'sum'
-    }).dropna().reset_index()
-    return df_4h
+def detect_fvg(df):
+    """Fair Value Gap in last 3 candles"""
+    if len(df) < 3:
+        return None
+    c1, c3 = df.iloc[-3], df.iloc[-1]
+    if c1['High'] < c3['Low']:
+        return "bullish"
+    elif c1['Low'] > c3['High']:
+        return "bearish"
+    return None
 
-# ==========================================
-# 5. CORE MULTI-TIMEFRAME SMC / ICT ENGINE
-# ==========================================
-def analyze_market(obj, token="99926000", symbol="NIFTY 50", exchange="NSE"):
-    now = datetime.datetime.now()
-    from_date_5m = (now - datetime.timedelta(days=5)).strftime("%Y-%m-%d 09:15")
-    from_date_1h = (now - datetime.timedelta(days=30)).strftime("%Y-%m-%d 09:15")
-    from_date_1d = (now - datetime.timedelta(days=60)).strftime("%Y-%m-%d 09:15")
-    to_date = now.strftime("%Y-%m-%d %H:%M")
+def detect_order_block(df, lookback=10):
+    """Order Block: Last opposite candle before strong impulse move"""
+    if len(df) < lookback + 2:
+        return None
+    recent = df.iloc[-lookback:]
+    last_candle = recent.iloc[-1]
+    
+    # Bullish OB: Strong green candle breaking recent high after red candle
+    if last_candle['Close'] > last_candle['Open'] and (last_candle['Close'] - last_candle['Open']) > (last_candle['High'] - last_candle['Low']) * 0.6:
+        red_candles = recent[recent['Close'] < recent['Open']]
+        if not red_candles.empty:
+            return "bullish"
+            
+    # Bearish OB: Strong red candle breaking recent low after green candle
+    elif last_candle['Close'] < last_candle['Open'] and (last_candle['Open'] - last_candle['Close']) > (last_candle['High'] - last_candle['Low']) * 0.6:
+        green_candles = recent[recent['Close'] > recent['Open']]
+        if not green_candles.empty:
+            return "bearish"
+            
+    return None
 
-    cols = ["Timestamp", "Open", "High", "Low", "Close", "Volume"]
+def detect_breaker_block(df, lookback=10):
+    """Breaker block: Market Structure Break of swing high/low"""
+    if len(df) < lookback + 2:
+        return None
+    recent = df.iloc[-lookback:]
+    swing_high = recent['High'].iloc[:-2].max()
+    swing_low = recent['Low'].iloc[:-2].min()
+    last_close, prev_close = df['Close'].iloc[-1], df['Close'].iloc[-2]
 
-    # 1. 5-Minute Execution Data
-    res_5m = obj.getCandleData({
-        "exchange": exchange,
-        "symboltoken": token,
-        "interval": "FIVE_MINUTE",
-        "fromdate": from_date_5m,
-        "todate": to_date
-    })
+    if prev_close <= swing_high and last_close > swing_high:
+        return "bullish"
+    elif prev_close >= swing_low and last_close < swing_low:
+        return "bearish"
+    return None
 
-    # 2. 1-Hour HTF Data
-    res_1h = obj.getCandleData({
-        "exchange": exchange,
-        "symboltoken": token,
-        "interval": "ONE_HOUR",
-        "fromdate": from_date_1h,
-        "todate": to_date
-    })
+# ================= Alert Formatters =================
+def send_main_trade_box(acc_id, symbol, side, entry, sl, tp1, tp2, rr, tf, smc_confluence):
+    border = "🟩" if "BUY" in side or "LONG" in side else "🟥"
+    msg = f"""
+{border}━━━━━━━━━━━━━━━━━━━━━━{border}
+*LUCKY TRADING - SMC CONFLUENCE*
+{border}━━━━━━━━━━━━━━━━━━━━━━{border}
+📌 *Account:* `{acc_id}` | *TF:* `{tf}`
+🏷 *Symbol:* `{symbol}`
+⚡ *Action:* *{side}*
+🎯 *Entry:* `{entry:.2f}`
+🛑 *SL:* `{sl:.2f}`
+🎯 *TP1:* `{tp1:.2f}` | *TP2:* `{tp2:.2f}`
+⚖ *R:R:* `1:{rr:.2f}`
+🧬 *SMC Signals:* `{smc_confluence}`
+📊 *System:* Daya SMC Engine
+{border}━━━━━━━━━━━━━━━━━━━━━━{border}
+"""
+    send_telegram_msg(msg)
 
-    # 3. Daily Data (PDH, PDL, PWH, PWL)
-    res_1d = obj.getCandleData({
-        "exchange": exchange,
-        "symboltoken": token,
-        "interval": "ONE_DAY",
-        "fromdate": from_date_1d,
-        "todate": to_date
-    })
+def send_pnl_box(acc_id, symbol, result_type, exit_price, pnl, new_bal):
+    icon = "💰" if pnl >= 0 else "🛑"
+    status_bar = "🟢 PROFIT HIT 🟢" if pnl >= 0 else "🔴 STOP LOSS HIT 🔴"
+    msg = f"""
+┌──────────────────────┐
+│ {status_bar} │
+└──────────────────────┘
+📦 *Account:* `{acc_id}`
+🏷 *Symbol:* `{symbol}`
+{icon} *Status:* *{result_type}*
+🏁 *Exit Price:* `{exit_price:.2f}`
+💵 *Realized P&L:* `${pnl:+.2f}`
+💼 *Updated Balance:* `${new_bal:,.2f}`
+────────────────────────
+"""
+    send_telegram_msg(msg)
 
-    if not res_5m or not res_5m.get('data') or not res_1h or not res_1h.get('data') or not res_1d or not res_1d.get('data'):
-        return
-
-    df_5m = pd.DataFrame(res_5m['data'], columns=cols)
-    df_5m[['Open', 'High', 'Low', 'Close', 'Volume']] = df_5m[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
-
-    df_1h = pd.DataFrame(res_1h['data'], columns=cols)
-    df_1h[['Open', 'High', 'Low', 'Close', 'Volume']] = df_1h[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
-
-    df_daily = pd.DataFrame(res_1d['data'], columns=cols)
-    df_daily[['Open', 'High', 'Low', 'Close', 'Volume']] = df_daily[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
-
-    # 4-Hour Resampling
-    df_4h = resample_to_4hr(df_1h)
-
-    # HTF Bias Determination (1H & 4H EMA Trend)
-    df_1h['EMA_20'] = df_1h['Close'].ewm(span=20, adjust=False).mean()
-    df_4h['EMA_20'] = df_4h['Close'].ewm(span=20, adjust=False).mean()
-
-    htf_1h_bullish = df_1h['Close'].iloc[-1] > df_1h['EMA_20'].iloc[-1]
-    htf_4h_bullish = df_4h['Close'].iloc[-1] > df_4h['EMA_20'].iloc[-1]
-
-    # Key Levels
-    pdh = float(df_daily['High'].iloc[-2])
-    pdl = float(df_daily['Low'].iloc[-2])
-    pwh = float(df_daily['High'].iloc[-6]) if len(df_daily) >= 6 else pdh
-    pwl = float(df_daily['Low'].iloc[-6]) if len(df_daily) >= 6 else pdl
-
-    # 5M Indicators
-    df_5m = calculate_vwap(df_5m)
-    df_5m = calculate_order_flow_delta(df_5m)
-
-    if len(df_5m) < 5:
-        return
-
-    curr = df_5m.iloc[-1]
-    prev = df_5m.iloc[-2]
-    prev2 = df_5m.iloc[-3]
-    prev3 = df_5m.iloc[-4]
-
-    curr_delta_pos = curr['Delta'] > 0
-    curr_delta_neg = curr['Delta'] < 0
-    cvd_expanding_up = curr['CVD'] > prev['CVD']
-    cvd_expanding_down = curr['CVD'] < prev['CVD']
-    above_vwap = curr['Close'] > curr['VWAP']
-    below_vwap = curr['Close'] < curr['VWAP']
-
-    entry_type = None
-    entry_price = float(curr['Close'])
-    sl = 0.0
-    tp1 = 0.0
-    tp2 = 0.0
-    setup_name = ""
-    reasons = []
-
-    # ==========================================================
-    # STRATEGY 1: LIQUIDITY SWEEP + FVG/OB RETEST (5M + HTF CONFLUENCE)
-    # ==========================================================
-    bull_sweep = (prev['Low'] < pdl and prev['Close'] > pdl) or (prev['Low'] < prev2['Low'] and prev['Close'] > prev2['Low'])
-    bull_fvg_retest = (curr['Low'] <= prev2['High']) and (curr['Close'] >= prev2['High'])
-    bull_ob_retest = (prev2['Close'] < prev2['Open']) and (curr['Low'] <= prev2['High']) and (curr['Close'] >= prev2['Low'])
-
-    if bull_sweep and (bull_fvg_retest or bull_ob_retest) and above_vwap and curr_delta_pos and cvd_expanding_up and htf_1h_bullish:
-        entry_type = "BUY"
-        setup_name = "HTF Aligned Sweep + FVG/OB Retest"
-        sl = float(min(curr['Low'], prev['Low']) - 5.0)
-        reasons = ["1H/4H Bullish Trend Bias", "PDL/Low Liquidity Hunt", "FVG/OB Retested", "Above VWAP", f"Delta Positive (+{curr['Delta']:.0f}) & CVD Up"]
-
-    bear_sweep = (prev['High'] > pdh and prev['Close'] < pdh) or (prev['High'] > prev2['High'] and prev['Close'] < prev2['High'])
-    bear_fvg_retest = (curr['High'] >= prev2['Low']) and (curr['Close'] <= prev2['Low'])
-    bear_ob_retest = (prev2['Close'] > prev2['Open']) and (curr['High'] >= prev2['Low']) and (curr['Close'] <= prev2['High'])
-
-    if bear_sweep and (bear_fvg_retest or bear_ob_retest) and below_vwap and curr_delta_neg and cvd_expanding_down and not htf_1h_bullish:
-        entry_type = "SELL"
-        setup_name = "HTF Aligned Sweep + FVG/OB Retest"
-        sl = float(max(curr['High'], prev['High']) + 5.0)
-        reasons = ["1H/4H Bearish Trend Bias", "PDH/High Liquidity Hunt", "FVG/OB Retested", "Below VWAP", f"Delta Negative ({curr['Delta']:.0f}) & CVD Down"]
-
-    # ==========================================================
-    # STRATEGY 2: BREAKER BLOCK RETEST (UP & DOWN)
-    # ==========================================================
-    if not entry_type:
-        failed_bear_ob = prev3['Close'] < prev3['Open']
-        breaker_up_level = float(prev3['High'])
-        if failed_bear_ob and prev['Close'] > breaker_up_level and (curr['Low'] <= breaker_up_level and curr['Close'] >= breaker_up_level) and above_vwap and curr_delta_pos and cvd_expanding_up:
-            entry_type = "BUY"
-            setup_name = "Bullish Breaker Block Retest"
-            sl = float(min(curr['Low'], breaker_up_level) - 5.0)
-            reasons = [f"Failed Bearish OB @ {breaker_up_level:.2f} Converted to Support", "5M Retest Validated", "Above VWAP", "Delta (+) & CVD Rising"]
-
-        failed_bull_ob = prev3['Close'] > prev3['Open']
-        breaker_down_level = float(prev3['Low'])
-        if failed_bull_ob and prev['Close'] < breaker_down_level and (curr['High'] >= breaker_down_level and curr['Close'] <= breaker_down_level) and below_vwap and curr_delta_neg and cvd_expanding_down:
-            entry_type = "SELL"
-            setup_name = "Bearish Breaker Block Retest"
-            sl = float(max(curr['High'], breaker_down_level) + 5.0)
-            reasons = [f"Failed Bullish OB @ {breaker_down_level:.2f} Converted to Resistance", "5M Retest Validated", "Below VWAP", "Delta (-) & CVD Falling"]
-
-    # ==========================================================
-    # STRATEGY 3: FVG/OB + VWAP STRONG MOMENTUM SURGE
-    # ==========================================================
-    if not entry_type:
-        vwap_bounce = (curr['Low'] <= curr['VWAP'] * 1.0008) and (curr['Close'] > curr['VWAP'])
-        green_candle = (curr['Close'] > curr['Open']) and ((curr['Close'] - curr['Open']) >= (curr['High'] - curr['Low']) * 0.55)
-        if (bull_fvg_retest or bull_ob_retest) and vwap_bounce and green_candle and curr_delta_pos and cvd_expanding_up:
-            entry_type = "BUY"
-            setup_name = "FVG/OB Retest + VWAP Strong Momentum Bounce"
-            sl = float(curr['Low'] - 5.0)
-            reasons = ["FVG/OB Retest", "VWAP Dynamic Support Reaction", "Strong Green Body", "Surging Institutional CVD"]
-
-        vwap_reject = (curr['High'] >= curr['VWAP'] * 0.9992) and (curr['Close'] < curr['VWAP'])
-        red_candle = (curr['Close'] < curr['Open']) and ((curr['Open'] - curr['Close']) >= (curr['High'] - curr['Low']) * 0.55)
-        if (bear_fvg_retest or bear_ob_retest) and vwap_reject and red_candle and curr_delta_neg and cvd_expanding_down:
-            entry_type = "SELL"
-            setup_name = "FVG/OB Retest + VWAP Strong Momentum Rejection"
-            sl = float(curr['High'] + 5.0)
-            reasons = ["FVG/OB Retest", "VWAP Dynamic Resistance Reaction", "Strong Red Body", "Plunging Institutional CVD"]
-
-    # ==========================================================
-    # 6. RISK MANAGEMENT (TP1, TP2, SL) & DISPATCH
-    # ==========================================================
-    if entry_type:
-        if entry_type == "BUY":
-            risk = entry_price - sl
-            if risk > 0:
-                tp1 = entry_price + (2.0 * risk)
-                tp2 = max(entry_price + (3.0 * risk), pdh, pwh)
-        else:
-            risk = sl - entry_price
-            if risk > 0:
-                tp1 = entry_price - (2.0 * risk)
-                tp2 = min(entry_price - (3.0 * risk), pdl, pwl)
-
-        if risk > 0:
-            icon = "🟢" if entry_type == "BUY" else "🔴"
-            delta_str = f"+{curr['Delta']:.0f}" if curr['Delta'] > 0 else f"{curr['Delta']:.0f}"
-            cvd_str = "🟢 Bullish Accumulation" if cvd_expanding_up else "🔴 Bearish Distribution"
-            htf_label = "🟢 1H/4H Bullish" if htf_1h_bullish else "🔴 1H/4H Bearish"
-
-            msg = (
-                f"⚡ *ICT/SMC MULTI-TF ALGO ALERT: {symbol}* ⚡\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 *SETUP:* `{setup_name}`\n"
-                f"📌 *ACTION:* `{entry_type}` {icon}\n"
-                f"💰 *Entry Price:* `{entry_price:.2f}`\n"
-                f"🛑 *Stop Loss (SL):* `{sl:.2f}` _(Risk: {abs(risk):.2f} pts)_\n"
-                f"🎯 *Target 1 (1:2 R:R):* `{tp1:.2f}`\n"
-                f"🚀 *Target 2 (1:3 R:R / Liquidity):* `{tp2:.2f}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"⏳ *Higher Timeframe Bias (1H/4H):* `{htf_label}`\n"
-                f"📊 *VWAP Level:* `{curr['VWAP']:.2f}`\n"
-                f"⚡ *Present Candle Delta:* `{delta_str}`\n"
-                f"🌊 *CVD Momentum:* `{cvd_str}`\n"
-                f"📍 *PDH:* `{pdh:.2f}` | *PDL:* `{pdl:.2f}`\n"
-                f"📍 *PWH:* `{pwh:.2f}` | *PWL:* `{pwl:.2f}`\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🔍 *Confluence Check:*\n• " + "\n• ".join(reasons) + "\n"
-                f"━━━━━━━━━━━━━━━━━━━"
-            )
-            send_telegram(msg)
-            print(f"Triggered: {setup_name} | {entry_type} @ {entry_price:.2f}")
-
-# ==========================================
-# 7. WORKER THREAD & APP ENTRY
-# ==========================================
-def run_trading_engine():
-    session = get_angel_session()
-    print("Multi-TF (5M + 1H/4H) SMC & Order Flow Engine Running...")
+# ================= Core Engine Loop =================
+def run_scanner():
+    print("🦁 Daya SMC Complete Engine Started...")
     while True:
         try:
-            if session:
-                analyze_market(session, token="99926000", symbol="NIFTY 50", exchange="NSE")
-            else:
-                session = get_angel_session()
+            for symbol in SYMBOLS:
+                if not is_crypto_symbol(symbol) and not is_nse_market_open():
+                    continue
+
+                for tf in TIMEFRAMES:
+                    fetch_tf = "1h" if tf in ("2h", "4h") else tf
+                    period_val = "5d" if tf == "5m" else "30d"
+
+                    df = fetch_yahoo_direct(symbol, fetch_tf, period_val)
+                    if df.empty or len(df) < 15:
+                        continue
+
+                    if tf in ("2h", "4h"):
+                        df = df.resample(tf).agg({
+                            'Open': 'first', 'High': 'max',
+                            'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+                        }).dropna()
+
+                    df = compute_indicators(df)
+                    if df.empty or len(df) < 3:
+                        continue
+
+                    c_close = float(df['Close'].iloc[-1])
+                    p_close = float(df['Close'].iloc[-2])
+                    c_vwap = float(df['VWAP'].iloc[-1])
+                    p_vwap = float(df['VWAP'].iloc[-2])
+                    atr_val = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else (c_close * 0.01)
+                    min_move = 0.3 * atr_val
+
+                    delta_val, delta_dir = compute_delta_approx(df)
+                    cvd_rising = float(df['CVD'].iloc[-1]) > float(df['CVD'].iloc[-2])
+
+                    # SMC Detections
+                    fvg_bias = detect_fvg(df)
+                    ob_bias = detect_order_block(df)
+                    breaker_bias = detect_breaker_block(df)
+                    of_bias = get_order_flow_bias(symbol)
+
+                    # SMC Scores
+                    smc_bull_signals = [s for s in [fvg_bias, ob_bias, breaker_bias] if s == "bullish"]
+                    smc_bear_signals = [s for s in [fvg_bias, ob_bias, breaker_bias] if s == "bearish"]
+
+                    vwap_bullish = (p_close <= p_vwap) and (c_close > c_vwap) and ((c_close - c_vwap) >= min_move)
+                    vwap_bearish = (p_close >= p_vwap) and (c_close < c_vwap) and ((c_vwap - c_close) >= min_move)
+
+                    # Entry Rules (Buy / Sell Confluence)
+                    g_buy = vwap_bullish and (delta_dir == "bullish") and cvd_rising and (len(smc_bull_signals) >= 1)
+                    r_buy = vwap_bearish and (delta_dir == "bearish") and (not cvd_rising) and (len(smc_bear_signals) >= 1)
+
+                    if of_bias is not None:
+                        g_buy = g_buy and (of_bias != "bearish")
+                        r_buy = r_buy and (of_bias != "bullish")
+
+                    g_exit = (p_close >= p_vwap) and (c_close < c_vwap)
+                    r_exit = (p_close <= p_vwap) and (c_close > c_vwap)
+
+                    for acc_id, acc in demo_accounts.items():
+                        if acc["tf"] != tf:
+                            continue
+                        trade = acc["active_trade"]
+
+                        if trade and trade["symbol"] == symbol:
+                            if trade["side"] == "LONG":
+                                if c_close >= trade["tp2"]:
+                                    pnl = (trade["tp2"] - trade["entry"]) * trade["qty"]
+                                    acc["balance"] += pnl
+                                    send_pnl_box(acc_id, symbol, "TP2 HIT", trade["tp2"], pnl, acc["balance"])
+                                    acc["active_trade"] = None
+                                    save_state()
+                                elif c_close >= trade["tp1"] and not trade["tp1_hit"]:
+                                    trade["tp1_hit"] = True
+                                    send_telegram_msg(f"🔹 *[{acc_id}]* `{symbol}` TP1 Reached! Holding for TP2.")
+                                elif c_close <= trade["sl"] or g_exit:
+                                    pnl = (c_close - trade["entry"]) * trade["qty"]
+                                    acc["balance"] += pnl
+                                    reason = "G.EXIT (Cross Down)" if g_exit else "SL HIT"
+                                    send_pnl_box(acc_id, symbol, reason, c_close, pnl, acc["balance"])
+                                    acc["active_trade"] = None
+                                    save_state()
+
+                            elif trade["side"] == "SHORT":
+                                if c_close <= trade["tp2"]:
+                                    pnl = (trade["entry"] - trade["tp2"]) * trade["qty"]
+                                    acc["balance"] += pnl
+                                    send_pnl_box(acc_id, symbol, "TP2 HIT", trade["tp2"], pnl, acc["balance"])
+                                    acc["active_trade"] = None
+                                    save_state()
+                                elif c_close <= trade["tp1"] and not trade["tp1_hit"]:
+                                    trade["tp1_hit"] = True
+                                    send_telegram_msg(f"🔹 *[{acc_id}]* `{symbol}` TP1 Reached! Holding for TP2.")
+                                elif c_close >= trade["sl"] or r_exit:
+                                    pnl = (trade["entry"] - c_close) * trade["qty"]
+                                    acc["balance"] += pnl
+                                    reason = "R.EXIT (Cross Up)" if r_exit else "SL HIT"
+                                    send_pnl_box(acc_id, symbol, reason, c_close, pnl, acc["balance"])
+                                    acc["active_trade"] = None
+                                    save_state()
+
+                        elif not trade:
+                            confluence_tag = f"FVG:{fvg_bias} | OB:{ob_bias} | BRK:{breaker_bias}"
+                            if g_buy:
+                                entry = c_close
+                                sl = entry - (1.5 * atr_val)
+                                tp1 = entry + (2.0 * atr_val)
+                                tp2 = entry + (3.5 * atr_val)
+                                risk = max(entry - sl, 0.01)
+                                qty = round((acc["balance"] * 0.01) / risk, 4)
+                                acc["active_trade"] = {
+                                    "symbol": symbol, "side": "LONG", "entry": entry,
+                                    "sl": sl, "tp1": tp1, "tp2": tp2, "qty": qty, "tp1_hit": False
+                                }
+                                send_main_trade_box(acc_id, symbol, "BUY", entry, sl, tp1, tp2, 2.0, tf, confluence_tag)
+                                save_state()
+
+                            elif r_buy:
+                                entry = c_close
+                                sl = entry + (1.5 * atr_val)
+                                tp1 = entry - (2.0 * atr_val)
+                                tp2 = entry - (3.5 * atr_val)
+                                risk = max(sl - entry, 0.01)
+                                qty = round((acc["balance"] * 0.01) / risk, 4)
+                                acc["active_trade"] = {
+                                    "symbol": symbol, "side": "SHORT", "entry": entry,
+                                    "sl": sl, "tp1": tp1, "tp2": tp2, "qty": qty, "tp1_hit": False
+                                }
+                                send_main_trade_box(acc_id, symbol, "SELL", entry, sl, tp1, tp2, 2.0, tf, confluence_tag)
+                                save_state()
+
             time.sleep(300)
         except Exception as err:
-            print(f"Engine Loop Error: {err}")
-            time.sleep(60)
-
-# Automatically launch the trading engine thread in background
-bot_thread = threading.Thread(target=run_trading_engine)
-bot_thread.daemon = True
-bot_thread.start()
+            print(f"Cycle Error: {err}")
+            time.sleep(10)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    send_telegram_msg("🚀 *Daya SMC Complete Bot Initialized!*\nOB + FVG + Breaker Block + VWAP Integrated.")
+    run_scanner()
