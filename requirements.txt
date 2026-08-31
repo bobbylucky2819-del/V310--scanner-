@@ -7,7 +7,3 @@ flask
 gunicorn
 requests
 pandas
-bot_state.json
-depth_data.json
-__pycache__/
-.env
